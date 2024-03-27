@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "tensorflow/python/eager/pywrap_tensor.h"
 
+#include <Python.h>  // NOLINT
 #include <stdlib.h>  // NOLINT
 #include <string.h>  // NOLINT
 
@@ -435,8 +436,6 @@ typedef struct EagerTensor {
   // tensors, this will contain a serialized HandleData proto with shape
   // inference metadata about shapes and dtypes of resources accessible from
   // this handle.
-  // Note that we assume that handle_data cannot participate in reference
-  // cycles, and hence don't provide GC support for it.
   PyObject* handle_data;
 
   // This stores `_tensor_shape`, a cached `TensorShape` object, and is set the
@@ -458,9 +457,7 @@ typedef struct EagerTensor {
   // Per-instance attribute dictionary, to support monkey patching
   // (e.g. EagerTensor.assign when slicing variables). This dictionary is
   // created by CPython the first time an attribute is assigned, pointed to by
-  // tp_dictoffset. Note that garbage collection is not enabled for
-  // EagerTensors, so assigning objects to EagerTensor attributes which require
-  // garbage collection is likely to cause issues.
+  // tp_dictoffset.
   PyObject* dict;
 } EagerTensor;
 
@@ -548,12 +545,15 @@ void EagerTensor_dealloc(EagerTensor* self) {
   // Needs to happen before any actual destruction.
   PyObject_ClearWeakRefs((PyObject*)self);
 
-  Py_DECREF(self->handle_data);
-  Py_DECREF(self->tensor_shape);
-  // If an attribute dictionary has been created, release it. Note that this
-  // is only ever created by CPython's attribute setting methods; we don't
-  // create it ourselves.
-  Py_CLEAR(self->dict);
+  PyObject* context = self->context;
+
+  // Ensure context is alive during Destructor calls.
+  if (context) {
+    Py_INCREF(self->context);
+  }
+
+  Py_TYPE(self)->tp_clear((PyObject*)self);
+
   if (self->handle != nullptr) {
     // Destructor may call arbitrary functions that end up calling into
     // Python from another thread.
@@ -564,7 +564,7 @@ void EagerTensor_dealloc(EagerTensor* self) {
   }
 
   // Decref context after deleting the tensor handle.
-  Py_XDECREF(self->context);
+  Py_XDECREF(context);
 
   // We have the global interpreter lock, so use this chance to perform delayed
   // refcount decrements.
@@ -864,6 +864,45 @@ static int EagerTensor_getbuffer(EagerTensor* self, Py_buffer* view,
   return 0;
 }
 
+// dynamic_attr: Allow the garbage collector to traverse the internal instance
+// `__dict__`.
+static int EagerTensor_traverse(PyObject* self, visitproc visit, void* arg) {
+#if PY_VERSION_HEX < 0x030C0000  // < Python 3.12
+  PyObject*& dict = *_PyObject_GetDictPtr(self);
+  Py_VISIT(dict);
+#else
+  _PyObject_VisitManagedDict(self, visit, arg);
+#endif  // PY_VERSION_HEX < 0x030C0000
+  Py_VISIT(((EagerTensor*)self)->handle_data);
+  Py_VISIT(((EagerTensor*)self)->tensor_shape);
+  if (((EagerTensor*)self)->context) {
+    Py_VISIT(((EagerTensor*)self)->context);
+  }
+  // https://docs.python.org/3/c-api/typeobj.html#c.PyTypeObject.tp_traverse
+  Py_VISIT(Py_TYPE(self));
+  return 0;
+}
+
+// dynamic_attr: Allow the GC to clear the dictionary.
+extern int EagerTensor_clear(PyObject* self) {
+  // If an attribute dictionary has been created, release it. Note that this
+  // is only ever created by CPython's attribute setting methods; we don't
+  // create it ourselves.
+#if PY_VERSION_HEX < 0x030C0000  // < Python 3.12
+  PyObject*& dict = *_PyObject_GetDictPtr(self);
+  Py_CLEAR(dict);
+#else
+  _PyObject_ClearManagedDict(self);
+#endif  // PY_VERSION_HEX < 0x030C0000
+
+  Py_CLEAR(((EagerTensor*)self)->handle_data);
+  Py_CLEAR(((EagerTensor*)self)->tensor_shape);
+  if (((EagerTensor*)self)->context) {
+    Py_CLEAR(((EagerTensor*)self)->context);
+  }
+  return 0;
+}
+
 static PyBufferProcs EagerTensor_as_buffer = {
 #if PY_MAJOR_VERSION < 3
     nullptr, nullptr, nullptr, nullptr,
@@ -896,6 +935,9 @@ static PyType_Slot EagerTensor_Type_slots[] = {
     {Py_tp_methods, reinterpret_cast<void*>(EagerTensor_methods)},
     {Py_tp_getset, reinterpret_cast<void*>(EagerTensor_getsetters)},
     {Py_tp_init, reinterpret_cast<void*>(EagerTensor_init)},
+    {Py_tp_clear, reinterpret_cast<void*>(EagerTensor_clear)},
+    {Py_tp_traverse, reinterpret_cast<void*>(EagerTensor_traverse)},
+    {Py_tp_free, reinterpret_cast<void*>(PyObject_GC_Del)},
     {0, nullptr},
 };
 #else
@@ -1095,16 +1137,14 @@ PyObject* TFE_Py_InitEagerTensor(PyObject* base_class) {
     PyErr_SetString(PyExc_RuntimeError, "Error while creating EagerTensorType");
     return nullptr;
   }
-#if PY_VERSION_HEX >= 0x030B0000
-  // Py_TPFLAGS_MANAGED_DICT is turned on by PyType_FromSpecWithBases by
-  // default. It tells Python that the class's __dict__ should be managed by VM,
-  // but EagerTensor sets a `tp_dictoffset` (below) to explicitly manage the
-  // dict. See:
-  // - https://docs.python.org/3/c-api/typeobj.html#c.Py_TPFLAGS_MANAGED_DICT
-  // - https://docs.python.org/3/c-api/typeobj.html#c.PyTypeObject.tp_dictoffset
-  EagerTensorType->tp_flags &= ~Py_TPFLAGS_MANAGED_DICT;
-#endif
+  EagerTensorType->tp_flags |= Py_TPFLAGS_HAVE_GC;
+#if PY_VERSION_HEX < 0x030B0000
   EagerTensorType->tp_dictoffset = offsetof(EagerTensor, dict);
+#else
+  // After Python 3.11, Py_TPFLAGS_MANAGED_DICT is enabled by default from
+  // subclasses of classes defined in Python.
+  EagerTensorType->tp_dictoffset = 0;
+#endif  // PY_VERSION_HEX < 0x030B0000
   EagerTensorType->tp_as_buffer = &EagerTensor_as_buffer;
 #else
   _EagerTensorType.tp_base = base_class_type;

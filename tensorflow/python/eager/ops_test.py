@@ -466,9 +466,34 @@ class OpsTest(test_util.TensorFlowTestCase, parameterized.TestCase):
     y.x = x
     weak_x = weakref.ref(x)
     weak_y = weakref.ref(y)
+    _ = """
+    import sys
+    print('x', hex(id(x)), flush=True)
+    print(
+        'wx1',
+        hex(id(weak_x())),
+        gc.is_finalized(weak_x()),
+        sys.getrefcount(weak_x()),
+        flush=True,
+    )
+    print('y', hex(id(y)), flush=True)
+    """
     del x
     del y
     gc.collect()
+    _ = """
+    print(
+        'wx',
+        hex(id(weak_x())),
+        gc.is_finalized(weak_x()),
+        sys.getrefcount(weak_x()),
+        flush=True,
+    )
+    print('wy', hex(id(weak_y())), flush=True)
+    if weak_x() is not None:
+      for obj in gc.get_referrers(weak_x()):
+        print(type(obj), hex(id(obj)), flush=True)
+    """
     self.assertIs(weak_x(), None)
     self.assertIs(weak_y(), None)
 
