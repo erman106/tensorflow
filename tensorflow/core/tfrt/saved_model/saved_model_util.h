@@ -143,6 +143,9 @@ absl::Status DeserializeAoTMlirModule(
     absl::string_view saved_model_dir, mlir::MLIRContext* context,
     mlir::OwningOpRef<mlir::ModuleOp>* mlir_module);
 
+std::vector<CallableOptions> SignatureDefsToCallableOptions(
+    const proto2::Map<std::string, SignatureDef>& signature_defs);
+
 void RegisterTfrtDialectsForAot(mlir::DialectRegistry& registry);
 
 }  // namespace tfrt_stub

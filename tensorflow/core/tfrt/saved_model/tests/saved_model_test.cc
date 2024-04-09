@@ -1088,7 +1088,8 @@ TEST(SavedModelTest, CustomModelConfig) {
         test_config = model_context.graph_execution_options()
                           .runtime_config.Get<TestConfig1>()
                           .value();
-        EXPECT_TRUE(model_context.meta_graph_def());
+        EXPECT_TRUE(model_context.graph_def());
+        EXPECT_FALSE(model_context.callable_options().empty());
         return absl::OkStatus();
       });
 

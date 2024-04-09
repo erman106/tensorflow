@@ -63,11 +63,16 @@ class ModelRuntimeContext {
 
   absl::string_view export_dir() const { return export_dir_; }
 
-  const MetaGraphDef* meta_graph_def() const { return meta_graph_def_; }
-  void set_meta_graph_def(const MetaGraphDef* meta_graph_def) {
-    meta_graph_def_ = meta_graph_def;
-  }
+  const GraphDef* graph_def() const { return graph_def_; }
+  void set_graph_def(const GraphDef* graph_def) { graph_def_ = graph_def; }
 
+  absl::Span<const CallableOptions> callable_options() const {
+    return callable_options_;
+  }
+  void set_callable_options(
+      absl::Span<const CallableOptions> callable_options) {
+    callable_options_ = callable_options;
+  }
   FunctionLibraryDefinition* function_library_definition() const {
     return flib_def_;
   }
@@ -97,8 +102,8 @@ class ModelRuntimeContext {
   const GraphExecutionOptions* graph_execution_options_ = nullptr;
 
   std::string export_dir_;
-  const MetaGraphDef* meta_graph_def_ = nullptr;
-
+  const GraphDef* graph_def_ = nullptr;
+  absl::Span<const CallableOptions> callable_options_;
   tfrt::ResourceContext* resource_context_ = nullptr;
 
   FunctionLibraryDefinition* flib_def_ = nullptr;

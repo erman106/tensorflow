@@ -563,12 +563,18 @@ absl::StatusOr<std::unique_ptr<SavedModel>> SavedModelImpl::LoadSavedModel(
                                     resource_context.get());
 
   {
-    model_context.set_meta_graph_def(&meta_graph_def);
+    model_context.set_graph_def(&meta_graph_def.graph_def());
+    const std::vector<CallableOptions> callable_options =
+        SignatureDefsToCallableOptions(meta_graph_def.signature_def());
+    model_context.set_callable_options(callable_options);
     TF_RETURN_IF_ERROR(
         options.graph_execution_options.runtime->CreateRuntimeResources(
             model_context));
 
-    model_context.set_meta_graph_def(nullptr);
+    // These are only needed for `CreateRuntimeResources`, and also safer
+    // since meta_graph_def will be moved.
+    model_context.set_graph_def(nullptr);
+    model_context.set_callable_options({});
   }
 
   GetDefaultInputValue(meta_graph_def.signature_def(), model_context,

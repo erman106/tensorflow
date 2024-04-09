@@ -239,12 +239,13 @@ absl::StatusOr<AotResult> AotCompileSavedModel(
                                     resource_context.get());
 
   {
-    model_context.set_meta_graph_def(&meta_graph_def);
-    TF_RETURN_IF_ERROR(
-        aot_options.graph_execution_options->runtime->CreateRuntimeResources(
-            model_context));
+    model_context.set_graph_def(&meta_graph_def.graph_def());
+    const std::vector<CallableOptions> callable_options =
+        SignatureDefsToCallableOptions(meta_graph_def.signature_def());
+    model_context.set_callable_options(callable_options);
 
-    model_context.set_meta_graph_def(nullptr);
+    model_context.set_graph_def(nullptr);
+    model_context.set_callable_options({});
   }
 
   tfrt::BefBuffer bef;

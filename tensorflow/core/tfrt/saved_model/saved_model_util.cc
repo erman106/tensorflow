@@ -366,6 +366,25 @@ absl::Status DeserializeAoTMlirModule(
   return absl::OkStatus();
 }
 
+std::vector<CallableOptions> SignatureDefsToCallableOptions(
+    const proto2::Map<std::string, SignatureDef>& signature_defs) {
+  std::vector<CallableOptions> callable_options;
+  callable_options.reserve(signature_defs.size());
+  for (const auto& sig_iter : signature_defs) {
+    const auto& signature_def = sig_iter.second;
+
+    tensorflow::CallableOptions& callable = callable_options.emplace_back();
+    for (const auto& p : signature_def.inputs()) {
+      callable.add_feed(p.second.name());
+    }
+    for (const auto& p : signature_def.outputs()) {
+      callable.add_fetch(p.second.name());
+    }
+  }
+
+  return callable_options;
+}
+
 void RegisterTfrtDialectsForAot(mlir::DialectRegistry& registry) {
   tfrt::RegisterTFRTDialects(registry);
   registry.insert<tfrt::fallback::FallbackDialect>();

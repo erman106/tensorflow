@@ -214,35 +214,13 @@ class TfrtSession : public tensorflow::Session {
     auto resource_context = std::make_unique<tfrt::ResourceContext>();
     tfrt_stub::ModelRuntimeContext model_context(
         &options, /*export_dir=*/"unknown_export_dir", resource_context.get());
-    MetaGraphDef meta_graph_def;
-    *meta_graph_def.mutable_graph_def() = graph;
-    model_context.set_meta_graph_def(&meta_graph_def);
+    model_context.set_graph_def(&graph);
     // In the multi-host case, this prevents local Sessions from running
     // global resource creation functions.
     model_context.set_is_local_session(
         !options_.config.experimental().enable_multi_host());
-    // Create mock signature def with all inputs and outputs. This
-    // prevents graph pruning.
-    if (options_.config.experimental().enable_multi_host()) {
-      // Fake a SignatureDef with all inputs and outputs.
-      // TODO(b/303480573): Cleanup ServingContext to not use
-      // MetaGraphDef.
-      SignatureDef& signature_def =
-          (*meta_graph_def.mutable_signature_def())["dummy_signature"];
-      for (const auto& node : graph.node()) {
-        if (node.op() == "Placeholder" || node.op() == "Const") {
-          TensorInfo& tensor_info =
-              (*signature_def.mutable_inputs())[node.name()];
-          tensor_info.set_name(node.name());
-        }
-        if (node.attr().contains("Tout")) {
-          TensorInfo& tensor_info =
-              (*signature_def.mutable_outputs())[node.name()];
-          tensor_info.set_name(node.name());
-        }
-      }
-    }
-
+    // TODO(b/334641254): Offer a Session option that explicitly sets
+    // model_context.callable_options.
     TF_RETURN_IF_ERROR(options.runtime->CreateRuntimeResources(model_context));
 
     // `GraphExecutor::Create()` will preprocess the graph (e.g., apply
