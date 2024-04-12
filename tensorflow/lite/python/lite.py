@@ -1580,11 +1580,19 @@ class TFLiteKerasModelConverterV2(TFLiteConverterBaseV2):
       output_tensors: List of output tensors.
     """
     try:
-      _save.save(
-          self._keras_model,
-          output_dir,
-          options=_save_options.SaveOptions(save_debug_info=True),
-      )
+      # It's a hack. Keras 3 models does not support model.save method to export
+      # to TF saved model format. Instead the model should be exported with
+      # model.export calls. Currently we check if the model has save_spec
+      # attribute to determine if the model is a Keras 3 model.
+      if hasattr(self._keras_model, "save_spec"):
+        # Keras 2.x model.
+        _save.save(
+            self._keras_model,
+            output_dir,
+            options=_save_options.SaveOptions(save_debug_info=True),
+        )
+      else:
+        self._keras_model.export(output_dir)
     except Exception:  # pylint: disable=broad-except
       # When storing the given keras model to a saved model is failed, let's
       # use original keras model conversion pipeline.

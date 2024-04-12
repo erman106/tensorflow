@@ -21,6 +21,7 @@ import os
 import sys
 
 from absl.testing import parameterized
+import keras as keras3
 import numpy as np
 import tensorflow as tf
 
@@ -3185,6 +3186,70 @@ class FromKerasModelTest(lite_v2_test_util.ModelTest):
     expected_value = model.predict(input_data)
     actual_value = self._evaluateTFLiteModel(tflite_model, [input_data])
     self.assertEqual(expected_value, actual_value)
+
+  @test_util.run_v2_only
+  def testK3SequentialModel(self):
+    """Test a simple sequential tf.Keras model."""
+    input_data = tf.constant(1.0, shape=[1, 1])
+
+    # Create a simple Keras model.
+    x = np.array([[1.0], [2.0]])
+    y = np.array([[2.0], [4.0]])
+
+    model = keras3.models.Sequential([
+        keras3.layers.Dropout(0.2),
+        keras3.layers.Dense(units=1, input_shape=[1]),
+    ])
+    model.compile(optimizer='sgd', loss='mean_squared_error')
+    model.fit(x, y, epochs=1)
+
+    # Convert model and ensure model is not None.
+    converter = lite.TFLiteConverterV2.from_keras_model(model)
+    tflite_model = converter.convert()
+    # Check the conversion metadata.
+    metadata = util.get_conversion_metadata(tflite_model)
+    self.assertIsNotNone(metadata)
+    self.assertEqual(
+        metadata.environment.modelType, metadata_fb.ModelType.KERAS_MODEL
+    )
+
+    # Check values from converted model.
+    expected_value = model.predict(input_data)
+    actual_value = self._evaluateTFLiteModel(tflite_model, [input_data])
+    self.assertEqual(expected_value, actual_value)
+
+
+  @test_util.run_v2_only
+  def testK3SequentialRandomModel(self):
+    """Test a simple sequential tf.Keras model."""
+    # input_data = tf.constant(1.0, shape=[1, 1])
+
+    # # Create a simple Keras model.
+    # x = np.array([[1.0], [2.0]])
+    # y = np.array([[2.0], [4.0]])
+
+    model = keras3.models.Sequential([
+        keras3.layers.Input(shape=(1,3)),
+        keras3.layers.RandomFlip("horizontal"),
+        keras3.layers.Dense(units=1, input_shape=[1]),
+    ])
+    model.compile(optimizer='sgd', loss='mean_squared_error')
+    # model.fit(x, y, epochs=1)
+
+    # Convert model and ensure model is not None.
+    converter = lite.TFLiteConverterV2.from_keras_model(model)
+    tflite_model = converter.convert()
+    # Check the conversion metadata.
+    metadata = util.get_conversion_metadata(tflite_model)
+    self.assertIsNotNone(metadata)
+    self.assertEqual(
+        metadata.environment.modelType, metadata_fb.ModelType.KERAS_MODEL
+    )
+
+    # # Check values from converted model.
+    # expected_value = model.predict(input_data)
+    # actual_value = self._evaluateTFLiteModel(tflite_model, [input_data])
+    # self.assertEqual(expected_value, actual_value)
 
   @test_util.run_v2_only
   def testSequentialMultiInputOutputModel(self):

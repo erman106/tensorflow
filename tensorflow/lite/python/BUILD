@@ -295,6 +295,7 @@ py_strict_test(
         ":test_util",
         ":util",
         #internal proto upb dep
+        "//third_party/py/keras",
         "//third_party/py/numpy",
         "//tensorflow:tensorflow_py",
         "//tensorflow/compiler/mlir/quantization/stablehlo:quantization_options_proto_py",
