@@ -1842,21 +1842,23 @@ bool LiteralBase::Piece::EqualDynamicSize(
 }
 
 bool LiteralBase::Piece::EqualElements(const LiteralBase::Piece& other) const {
-  if (subshape().is_static() &&
-      ShapeUtil::Equal(subshape(), other.subshape()) && subshape().IsArray()) {
-    CHECK(LayoutUtil::IsDenseArray(subshape()))
-        << __func__ << " is only supported for dense arrays: " << subshape();
-    CHECK_EQ(size_bytes_dense(), other.size_bytes_dense());
-    if (primitive_util::Is4BitType(subshape().element_type())) {
-      auto one_array = buffer();
-      auto two_array = other.buffer();
-      for (int64_t i = 0; i < size_bytes_dense(); ++i) {
-        if ((one_array[i] & uint8_t{0xf}) != (two_array[i] & uint8_t{0xf}))
-          return false;
+  if (subshape().is_static()) {
+    if (!ShapeUtil::Equal(subshape(), other.subshape())) return false;
+    if (subshape().IsArray()) {
+      CHECK(LayoutUtil::IsDenseArray(subshape()))
+          << __func__ << " is only supported for dense arrays: " << subshape();
+      CHECK_EQ(size_bytes_dense(), other.size_bytes_dense());
+      if (primitive_util::Is4BitType(subshape().element_type())) {
+        auto one_array = buffer();
+        auto two_array = other.buffer();
+        for (int64_t i = 0; i < size_bytes_dense(); ++i) {
+          if ((one_array[i] & uint8_t{0xf}) != (two_array[i] & uint8_t{0xf}))
+            return false;
+        }
+        return true;
       }
-      return true;
+      return memcmp(buffer(), other.buffer(), size_bytes_dense()) == 0;
     }
-    return memcmp(buffer(), other.buffer(), size_bytes_dense()) == 0;
   }
 
   std::vector<int64_t> multi_index;
