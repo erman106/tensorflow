@@ -1012,22 +1012,24 @@ tf_cc_test(
     ],
 )
 
-tf_cc_test(
-    name = "c_api_function_test",
-    size = "medium",
-    srcs = ["c_api_function_test.cc"],
-    deps = [
-        ":c_api",
-        ":c_api_internal",
-        ":c_test_util",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
-    ],
-)
+# copybara:uncomment_begin
+# tf_cc_test(
+#     name = "c_api_function_test",
+#     size = "medium",
+#     srcs = ["c_api_function_test.cc"],
+#     deps = [
+#         ":c_api",
+#         ":c_api_internal",
+#         ":c_test_util",
+#         "//tensorflow/core:framework",
+#         "//tensorflow/core:lib",
+#         "//tensorflow/core:lib_internal",
+#         "//tensorflow/core:protos_all_cc",
+#         "//tensorflow/core:test",
+#         "//tensorflow/core:test_main",
+#     ],
+# )
+# copybara:uncomment_end
 
 tf_cc_test(
     name = "while_loop_test",

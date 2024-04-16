@@ -280,12 +280,14 @@ test_suite(
     ],
 )
 
-test_suite(
-    name = "c_api_experimental_test",
-    tests = [
-        "//tensorflow/lite/core/c:c_api_experimental_test",
-    ],
-)
+# copybara:uncomment_begin
+# test_suite(
+#     name = "c_api_experimental_test",
+#     tests = [
+#         "//tensorflow/lite/core/c:c_api_experimental_test",
+#     ],
+# )
+# copybara:uncomment_end
 
 cc_test(
     name = "c_api_signature_runner_test",
