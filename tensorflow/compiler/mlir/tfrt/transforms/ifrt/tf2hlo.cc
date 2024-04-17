@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tfrt/transforms/ifrt/tf2hlo.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -58,7 +59,9 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/protobuf/tpu/compile_metadata.pb.h"
 #include "tensorflow/core/protobuf/tpu/topology.pb.h"
+#include "tensorflow/core/tfrt/ifrt/ifrt_loaded_variable_utils.h"
 #include "tensorflow/core/tpu/kernels/tpu_compile_op_support.h"
+#include "tsl/framework/serving_device_selector.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -66,11 +69,24 @@ namespace tensorflow {
 namespace ifrt_serving {
 namespace {
 static constexpr absl::string_view kEntryFuncName = "main";
+}  // namespace
 
 absl::StatusOr<tensorflow::tpu::TPUCompileMetadataProto> GetCompileMetadata(
-    mlir::func::FuncOp op, absl::Span<const DtypeAndShape> inputs,
-    const xla::ifrt::Client& ifrt_client) {
+    mlir::ModuleOp module, absl::Span<const DtypeAndShape> inputs,
+    const xla::ifrt::Client& ifrt_client,
+    const tsl::DeviceReservation& device_reservation) {
   tensorflow::tpu::TPUCompileMetadataProto metadata;
+
+  auto op = module.lookupSymbol<mlir::func::FuncOp>(kEntryFuncName);
+  if (!op) {
+    return absl::InternalError("Could not find entry function in MLIR Module.");
+  }
+
+  if (inputs.size() != op.getNumArguments()) {
+    return absl::InternalError(
+        absl::StrCat("Entry function arguments mismatched! Expected ",
+                     op.getNumArguments(), " got", inputs.size()));
+  }
 
   auto metadata_text_attr =
       op->getAttrOfType<mlir::StringAttr>(kMetadataTextAttrName);
@@ -126,28 +142,35 @@ absl::StatusOr<tensorflow::tpu::TPUCompileMetadataProto> GetCompileMetadata(
     *metadata.mutable_args(i)->mutable_shape() = inputs[i].shape.AsProto();
   }
 
-  // Create a default device assignment if one is not given by the model.
-  if (!metadata.has_device_assignment()) {
-    // TODO(b/316068010): integrate core selection.
+  // We always respect core selection result if it is available.
+  xla::DeviceAssignmentProto device_assignment_proto;
+  if (device_reservation.device_index() != kNoCoreSelectedIndex &&
+      metadata.num_replicas() * metadata.num_cores_per_replica() == 1) {
+    LOG(INFO) << "11111 ";
+    device_assignment_proto.set_computation_count(1);
+    device_assignment_proto.set_replica_count(1);
+    device_assignment_proto.add_computation_devices()->add_replica_device_ids(
+        device_reservation.device_index());
+    *metadata.mutable_device_assignment() = std::move(device_assignment_proto);
+  } else if (!metadata.has_device_assignment()) {
+    LOG(INFO) << "2222 ";
     TF_ASSIGN_OR_RETURN(
         auto device_assignment,
         ifrt_client.GetDefaultDeviceAssignment(
             metadata.num_replicas(), metadata.num_cores_per_replica()));
-
-    xla::DeviceAssignmentProto device_assignment_proto;
     TF_RETURN_IF_ERROR(device_assignment.Serialize(&device_assignment_proto));
-
-    *metadata.mutable_device_assignment() = device_assignment_proto;
+    *metadata.mutable_device_assignment() = std::move(device_assignment_proto);
   }
 
   return metadata;
 }
-}  // namespace
 
 absl::StatusOr<Tf2HloResult> CompileTfToHlo(
+    const tensorflow::tpu::TPUCompileMetadataProto& compile_metadata,
     mlir::ModuleOp module, absl::Span<const DtypeAndShape> inputs,
     absl::string_view entry_function_name, const xla::ifrt::Client& ifrt_client,
-    tensorflow::XlaHelpers::ShapeRepresentationFn shape_representation_fn) {
+    tensorflow::XlaHelpers::ShapeRepresentationFn shape_representation_fn,
+    std::optional<int> selected_device_index) {
   if (VLOG_IS_ON(1)) {
     tensorflow::DumpMlirOpToFile("ifrt_before_bridge_phase2", module);
   }
@@ -165,21 +188,6 @@ absl::StatusOr<Tf2HloResult> CompileTfToHlo(
   TF_ASSIGN_OR_RETURN(
       auto* client, xla::ClientLibrary::GetOrCreateCompileOnlyClient(platform));
 
-  auto entry_fn = module.lookupSymbol<mlir::func::FuncOp>(kEntryFuncName);
-  if (!entry_fn) {
-    return absl::InternalError("Could not find entry function in MLIR Module.");
-  }
-
-  if (inputs.size() != entry_fn.getNumArguments()) {
-    return absl::InternalError(
-        absl::StrCat("Entry function arguments mismatched! Expected ",
-                     entry_fn.getNumArguments(), " got", inputs.size()));
-  }
-
-  TF_ASSIGN_OR_RETURN(tensorflow::tpu::TPUCompileMetadataProto compile_metadata,
-                      GetCompileMetadata(entry_fn, inputs, ifrt_client));
-
-  VLOG(1) << "Compilation metadata: " << compile_metadata;
 
   std::vector<TensorShape> arg_shapes;
   for (const auto& input : inputs) {

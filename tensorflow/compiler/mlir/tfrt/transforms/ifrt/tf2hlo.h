@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TFRT_TRANSFORMS_IFRT_TF2HLO_H_
 #define TENSORFLOW_COMPILER_MLIR_TFRT_TRANSFORMS_IFRT_TF2HLO_H_
 
+#include <optional>
+
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -24,10 +26,9 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tfrt/transforms/ifrt/ifrt_types.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "xla/python/ifrt/client.h"
-#include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/protobuf/tpu/compile_metadata.pb.h"
+#include "tsl/framework/serving_device_selector.h"
 
 namespace tensorflow {
 namespace ifrt_serving {
@@ -38,12 +39,19 @@ struct Tf2HloResult {
   tf2xla::HostComputeMetadata host_compute_metadata;
 };
 
+absl::StatusOr<tensorflow::tpu::TPUCompileMetadataProto> GetCompileMetadata(
+    mlir::ModuleOp module, absl::Span<const DtypeAndShape> inputs,
+    const xla::ifrt::Client& ifrt_client,
+    const tsl::DeviceReservation& device_reservation);
+
 // A class that convert tf module to hlo
 // TODO(b/304839793): provide wrap persistent compilation cache.
 absl::StatusOr<Tf2HloResult> CompileTfToHlo(
+    const tensorflow::tpu::TPUCompileMetadataProto& compile_metadata,
     mlir::ModuleOp module, absl::Span<const DtypeAndShape> inputs,
     absl::string_view entry_function_name, const xla::ifrt::Client& ifrt_client,
-    tensorflow::XlaHelpers::ShapeRepresentationFn shape_representation_fn);
+    tensorflow::XlaHelpers::ShapeRepresentationFn shape_representation_fn,
+    std::optional<int> selected_device_index = std::nullopt);
 
 }  // namespace ifrt_serving
 }  // namespace tensorflow

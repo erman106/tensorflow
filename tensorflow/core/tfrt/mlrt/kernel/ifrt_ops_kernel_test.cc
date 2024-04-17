@@ -44,6 +44,7 @@ limitations under the License.
 #include "tensorflow/core/tfrt/ifrt/ifrt_config.pb.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_model_context.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_restore_tensor_registry.h"
+#include "tensorflow/core/tfrt/ifrt/ifrt_serving_core_selector.h"
 #include "tensorflow/core/tfrt/mlrt/bytecode/bytecode.h"
 #include "tensorflow/core/tfrt/mlrt/bytecode/executable.h"
 #include "tensorflow/core/tfrt/mlrt/interpreter/builtin_kernels.h"
@@ -54,6 +55,7 @@ limitations under the License.
 #include "tensorflow/core/tfrt/mlrt/kernel/context.h"
 #include "tensorflow/core/tfrt/mlrt/kernel/kernel.h"
 #include "tensorflow/core/tfrt/utils/fallback_tensor.h"
+#include "tsl/framework/test_util/mock_serving_device_selector.h"
 #include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/status.h"
@@ -328,7 +330,22 @@ mlrt::bc::Buffer CreateExecutableForIfrtLoadVariableOp(
   return buffer;
 }
 
-TEST(KernelTest, IfrtLoadVariableOp) {
+class KernelTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    serving_device_selector_ =
+        std::make_unique<tsl::test_util::MockServingDeviceSelector>();
+    ifrt_core_selector_ =
+        std::make_unique<ifrt_serving::IfrtServingCoreSelector>(
+            serving_device_selector_.get());
+  }
+
+  std::unique_ptr<tsl::test_util::MockServingDeviceSelector>
+      serving_device_selector_;
+  std::unique_ptr<ifrt_serving::IfrtServingCoreSelector> ifrt_core_selector_;
+};
+
+TEST_F(KernelTest, IfrtLoadVariableOp) {
   auto buffer = CreateExecutableForIfrtLoadVariableOp();
 
   mlrt::bc::Executable executable(buffer.data());
@@ -364,7 +381,7 @@ TEST(KernelTest, IfrtLoadVariableOp) {
   TF_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::ifrt::Client> client,
                           xla::ifrt::test_util::GetClient());
   resource_context.CreateResource<tensorflow::ifrt_serving::IfrtModelContext>(
-      "IfrtModelContext", client, &GetThreadPool());
+      "IfrtModelContext", client, ifrt_core_selector_.get(), &GetThreadPool());
 
   auto tf_context =
       std::make_unique<Context>(&fallback_request_state, &resource_context);
@@ -377,12 +394,6 @@ TEST(KernelTest, IfrtLoadVariableOp) {
                   "IfrtModelContext");
 
   ASSERT_TRUE(ifrt_model_context.has_value());
-  EXPECT_THAT((*ifrt_model_context)
-                  ->GetLoadedVariableRegistry()
-                  .GetLoadedVariable(kVariableRuntimeName)
-                  .status(),
-              ::tsl::testing::StatusIs(absl::StatusCode::kNotFound));
-
   auto restore_work_queue = tfrt::CreateMultiThreadedWorkQueue(
       /*num_threads=*/4, /*num_blocking_threads=*/4);
   (*ifrt_model_context)->set_checkpoint_loader_queue(restore_work_queue.get());
@@ -416,7 +427,6 @@ TEST(KernelTest, IfrtLoadVariableOp) {
   execution_context.Call(executable.functions()[0], last_uses,
                          absl::MakeSpan(args), absl::MakeSpan(results));
   mlrt::Execute(execution_context);
-
   notification.WaitForNotification();
 
   TF_ASSERT_OK(execution_context.status());
@@ -425,7 +435,7 @@ TEST(KernelTest, IfrtLoadVariableOp) {
               AsScalar(tsl::tstring(kVariableRuntimeName)));
 }
 
-TEST(KernelTest, DuplicateIfrtLoadVariableOpShallSucceed) {
+TEST_F(KernelTest, DuplicateIfrtLoadVariableOpShallSucceed) {
   auto buffer = CreateExecutableForIfrtLoadVariableOp(
       /*redundant_ifrt_load_variable_op=*/true);
 
@@ -462,7 +472,7 @@ TEST(KernelTest, DuplicateIfrtLoadVariableOpShallSucceed) {
   TF_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::ifrt::Client> client,
                           xla::ifrt::test_util::GetClient());
   resource_context.CreateResource<tensorflow::ifrt_serving::IfrtModelContext>(
-      "IfrtModelContext", client, &GetThreadPool());
+      "IfrtModelContext", client, ifrt_core_selector_.get(), &GetThreadPool());
 
   auto tf_context =
       std::make_unique<Context>(&fallback_request_state, &resource_context);
@@ -475,11 +485,6 @@ TEST(KernelTest, DuplicateIfrtLoadVariableOpShallSucceed) {
                   "IfrtModelContext");
 
   ASSERT_TRUE(ifrt_model_context.has_value());
-  EXPECT_THAT((*ifrt_model_context)
-                  ->GetLoadedVariableRegistry()
-                  .GetLoadedVariable(kVariableRuntimeName)
-                  .status(),
-              ::tsl::testing::StatusIs(absl::StatusCode::kNotFound));
 
   auto restore_work_queue = tfrt::CreateMultiThreadedWorkQueue(
       /*num_threads=*/4, /*num_blocking_threads=*/4);
@@ -523,7 +528,7 @@ TEST(KernelTest, DuplicateIfrtLoadVariableOpShallSucceed) {
               AsScalar(tsl::tstring(kVariableRuntimeName)));
 }
 
-TEST(KernelTest, IfrtRestoreVariableOp) {
+TEST_F(KernelTest, IfrtRestoreVariableOp) {
   std::string checkpoint_prefix =
       tensorflow::GetDataDependencyFilepath(
           "tensorflow/core/tfrt/mlrt/kernel/testdata/"
@@ -565,7 +570,7 @@ TEST(KernelTest, IfrtRestoreVariableOp) {
   TF_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::ifrt::Client> client,
                           xla::ifrt::test_util::GetClient());
   resource_context.CreateResource<tensorflow::ifrt_serving::IfrtModelContext>(
-      "IfrtModelContext", client, &GetThreadPool());
+      "IfrtModelContext", client, ifrt_core_selector_.get(), &GetThreadPool());
 
   auto tf_context =
       std::make_unique<Context>(&fallback_request_state, &resource_context);

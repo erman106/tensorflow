@@ -33,6 +33,20 @@ namespace ifrt_serving {
 // This class is thread safe.
 class IfrtLoadedVariableRegistry {
  public:
+  struct Key {
+    absl::flat_hash_set<int> device_ids;
+    std::string input_name;
+    template <typename H>
+    friend H AbslHashValue(H h, const Key& key) {
+      h = H::combine(std::move(h), key.input_name, key.device_ids);
+      return h;
+    }
+
+    friend bool operator==(const Key& x, const Key& y) {
+      return x.input_name == y.input_name && x.device_ids == y.device_ids;
+    }
+  };
+
   struct LoadedVariable {
     xla::ifrt::Future<absl::StatusOr<tsl::RCReference<xla::ifrt::Array>>> array;
   };
@@ -45,16 +59,15 @@ class IfrtLoadedVariableRegistry {
   // OK if the named array already exists.
   // loaded_variable_constructor is invoked in the caller thread.
   absl::Status TryRegisterLoadedVariable(
-      absl::string_view name,
-      LoadedVariableConstructor&& loaded_variable_constructor)
+      Key key, LoadedVariableConstructor&& loaded_variable_constructor)
       ABSL_LOCKS_EXCLUDED(mutex_);
 
-  absl::StatusOr<LoadedVariable> GetLoadedVariable(absl::string_view name) const
+  absl::StatusOr<LoadedVariable> GetLoadedVariable(Key key) const
       ABSL_LOCKS_EXCLUDED(mutex_);
 
  private:
   mutable absl::Mutex mutex_;
-  absl::flat_hash_map<std::string, LoadedVariable> loaded_variable_map_
+  absl::flat_hash_map<Key, LoadedVariable> loaded_variable_map_
       ABSL_GUARDED_BY(mutex_);
 };
 
