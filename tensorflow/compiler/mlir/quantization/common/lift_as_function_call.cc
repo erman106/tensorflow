@@ -21,6 +21,7 @@ limitations under the License.
 #include <stack>
 #include <string>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
@@ -31,6 +32,7 @@ limitations under the License.
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -522,6 +524,22 @@ bool IsWeightOnlyQuantizableOp(const Operation& op) {
            quantization_method->has_weight_only_ptq();
   }
   return false;
+}
+
+SmallVector<func::FuncOp> GetSortedFunctions(ModuleOp module_op) {
+  SmallVector<StringRef> func_names;
+  llvm::StringMap<func::FuncOp> func_map;
+  for (auto func : module_op.getOps<func::FuncOp>()) {
+    func_names.push_back(func.getName());
+    func_map[func.getName()] = func;
+  }
+
+  absl::c_sort(func_names);
+  SmallVector<func::FuncOp> result;
+  for (StringRef func_name : func_names) {
+    result.push_back(func_map[func_name]);
+  }
+  return result;
 }
 
 }  // namespace mlir::quant

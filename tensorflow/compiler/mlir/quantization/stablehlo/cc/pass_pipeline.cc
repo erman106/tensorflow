@@ -51,7 +51,6 @@ void AddPreCalibrationPasses(OpPassManager& pm,
   }
   pm.addNestedPass<func::FuncOp>(
       CreateInsertCustomAggregationOpsPass(calibration_options));
-  pm.addPass(CreateIssueIDsOfCustomAggregationOpsPass());
 }
 
 void AddPostCalibrationPasses(OpPassManager& pm,

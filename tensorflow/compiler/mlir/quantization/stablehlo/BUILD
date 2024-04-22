@@ -509,6 +509,7 @@ gentbl_cc_library(
 cc_library(
     name = "test_passes",
     srcs = [
+        "passes/testing/test_insert_calibration_statistics_saver.cc",
         "passes/testing/test_lift_quantizable_spots_as_functions_with_quantization_specs.cc",
         "passes/testing/test_post_calibration_component.cc",
         "passes/testing/test_pre_calibration_component.cc",

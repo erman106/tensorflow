@@ -77,10 +77,12 @@ class CalibrationComponent : public Component {
   // Exports `module_op` to SavedModel at `dst_saved_model_path`. This is used
   // to export the pre-calibrated `module_op` to SavedModel so that the
   // calibration process can use it to load and run the graph with the
-  // representative dataset.
-  absl::StatusOr<tensorflow::quantization::ExportedModel> ExportToSavedModel(
-      ModuleOp module_op, absl::string_view calibration_data_dir,
-      absl::string_view dst_saved_model_path);
+  // representative dataset. Returns a bool that indicates if running
+  // calibration is required.
+  absl::Status ExportToSavedModel(ModuleOp module_op,
+                                  absl::string_view calibration_data_dir,
+                                  bool reuse_calibration_data,
+                                  absl::string_view dst_saved_model_path);
 
   // Imports the SavedModel at `calibrated_saved_model_path` to `ModuleOp` after
   // running calibration.
@@ -113,7 +115,8 @@ class CalibrationComponent : public Component {
 
 // Runs passes to prepare the calibration model.
 absl::Status RunCalibrationPasses(mlir::ModuleOp module_op, MLIRContext& ctx,
-                                  absl::string_view calibration_data_dir);
+                                  absl::string_view calibration_data_dir,
+                                  bool reuse_calibration_data);
 
 }  // namespace mlir::quant::stablehlo
 

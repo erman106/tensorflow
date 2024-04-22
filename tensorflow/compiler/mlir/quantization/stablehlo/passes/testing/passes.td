@@ -91,3 +91,12 @@ def TestLiftQuantizableSpotsAsFunctionsWithQuantizationSpecsPass :
       "TF::TensorFlowDialect",
   ];
 }
+
+def TestInsertCalibrationStatisticsSaverWithSkippingPass :
+    Pass<"stablehlo-test-insert-calibration-statistics-saver-with-skipping", "mlir::ModuleOp"> {
+  let summary = "Test-only pass for testing the InsertCalibrationStatisticsSaverPass with skipping ops.";
+  let dependentDialects = [
+      "mlir::func::FuncDialect",
+      "TF::TensorFlowDialect",
+  ];
+}

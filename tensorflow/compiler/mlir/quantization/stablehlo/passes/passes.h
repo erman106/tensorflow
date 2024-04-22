@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 #include "absl/status/statusor.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -46,7 +47,9 @@ CreateLiftQuantizableSpotsAsFunctionsPass(
 
 // Creates a pass that inserts CalibrationStatisticsSaverOp.
 std::unique_ptr<OperationPass<ModuleOp>>
-CreateInsertCalibrationStatisticsSaverPass(StringRef calibration_data_dir);
+CreateInsertCalibrationStatisticsSaverPass(
+    StringRef calibration_data_dir,
+    const std::unordered_set<std::string>& skipping_aggregator_ops);
 
 // Adds generated pass default constructors or options definitions.
 #define GEN_PASS_DECL

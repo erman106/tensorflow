@@ -15,6 +15,7 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 #include "absl/strings/string_view.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -48,11 +49,14 @@ std::string GetOutputFilePath(absl::string_view calibration_data_dir,
 }
 
 // Finds `CustomAggregator` ops and collects their outputs and attributes.
-void FindCustomAggregatorOps(Region& region,
-                             SmallVector<Value>& statistics_outputs,
-                             SmallVector<StringRef>& ids,
-                             SmallVector<int32_t>& calibration_methods) {
+void FindCustomAggregatorOps(
+    Region& region,
+    const std::unordered_set<std::string>& skipping_aggregator_ops,
+    SmallVector<Value>& statistics_outputs, SmallVector<StringRef>& ids,
+    SmallVector<int32_t>& calibration_methods) {
   for (auto op : region.getOps<TF::CustomAggregatorOp>()) {
+    if (skipping_aggregator_ops.contains(op.getId().str())) continue;
+
     ids.push_back(op.getId());
     calibration_methods.push_back(op.getCalibrationMethod());
     statistics_outputs.push_back(op.getMin());
@@ -63,11 +67,13 @@ void FindCustomAggregatorOps(Region& region,
 
 // Inserts a `CalibrationStatisticsSaverOp` to the end of the region.
 LogicalResult InsertCalibrationStatisticsSaverOp(
-    Region& region, MLIRContext& ctx, absl::string_view output_file_path) {
+    Region& region, MLIRContext& ctx, absl::string_view output_file_path,
+    const std::unordered_set<std::string>& skipping_aggregator_ops) {
   SmallVector<Value> statistics_outputs;
   SmallVector<StringRef> ids;
   SmallVector<int32_t> calibration_methods;
-  FindCustomAggregatorOps(region, statistics_outputs, ids, calibration_methods);
+  FindCustomAggregatorOps(region, skipping_aggregator_ops, statistics_outputs,
+                          ids, calibration_methods);
   if (statistics_outputs.empty()) return failure();
 
   OpBuilder builder(&ctx);
@@ -126,11 +132,15 @@ class InsertCalibrationStatisticsSaverPass
       InsertCalibrationStatisticsSaverPass>::
       InsertCalibrationStatisticsSaverPassBase;
 
-  explicit InsertCalibrationStatisticsSaverPass(StringRef calibration_data_dir)
-      : calibration_data_dir_(calibration_data_dir) {}
+  InsertCalibrationStatisticsSaverPass(
+      StringRef calibration_data_dir,
+      const std::unordered_set<std::string>& skipping_aggregator_ops)
+      : calibration_data_dir_(calibration_data_dir),
+        skipping_aggregator_ops_(skipping_aggregator_ops) {}
 
  private:
   std::string calibration_data_dir_;
+  std::unordered_set<std::string> skipping_aggregator_ops_;
   void runOnOperation() override;
 };
 
@@ -148,7 +158,8 @@ void InsertCalibrationStatisticsSaverPass::runOnOperation() {
         if (succeeded(InsertCalibrationStatisticsSaverOp(
                 region, ctx,
                 GetOutputFilePath(calibration_data_dir_, func_name,
-                                  output_file_idx)))) {
+                                  output_file_idx),
+                skipping_aggregator_ops_))) {
           ++output_file_idx;
         };
       }
@@ -167,9 +178,11 @@ void InsertCalibrationStatisticsSaverPass::runOnOperation() {
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-CreateInsertCalibrationStatisticsSaverPass(StringRef calibration_data_dir) {
+CreateInsertCalibrationStatisticsSaverPass(
+    StringRef calibration_data_dir,
+    const std::unordered_set<std::string>& skipping_aggregator_ops) {
   return std::make_unique<InsertCalibrationStatisticsSaverPass>(
-      calibration_data_dir);
+      calibration_data_dir, skipping_aggregator_ops);
 }
 
 }  // namespace mlir::quant::stablehlo
