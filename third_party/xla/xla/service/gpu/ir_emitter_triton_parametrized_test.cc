@@ -1579,22 +1579,17 @@ max_computation {
   arg_1 = $0[] parameter(1)
   ROOT maximum = $0[] maximum(arg_0, arg_1)
 }
-add_computation {
-  arg_0.1 = $0[] parameter(0)
-  arg_1.1 = $0[] parameter(1)
-  ROOT add = $0[] add(arg_0.1, arg_1.1)
-}
 ENTRY main {
   param_0 = $0[127,125]{1,0} parameter(0)
   constant_neg_inf = $0[] constant(0)
-  reduce = $0[127]{0} reduce(param_0, constant_neg_inf), dimensions={1}, to_apply=add_computation
+  reduce = $0[127]{0} reduce(param_0, constant_neg_inf), dimensions={1}, to_apply=max_computation
   broadcast = $0[127,125]{1,0} broadcast(reduce), dimensions={0}
   subtract = $0[127,125]{1,0} subtract(param_0, broadcast)
-  multiply = $0[127,125]{1,0} multiply(subtract, subtract)
+  multiply = $0[127,125]{1,0} add(subtract, subtract)
   constant_zero = $0[] constant(0)
-  second_reduce = $0[127]{0} reduce(multiply, constant_zero), dimensions={1}, to_apply=add_computation
+  second_reduce = $0[127]{0} reduce(multiply, constant_zero), dimensions={1}, to_apply=max_computation
   second_broadcast = $0[127,125]{1,0} broadcast(second_reduce), dimensions={0}
-  ROOT multiply_root = $0[127,125]{1,0} multiply(multiply, second_broadcast)
+  ROOT multiply_root = $0[127,125]{1,0} add(multiply, second_broadcast)
 }
 )";
   const std::string hlo_text = absl::Substitute(
@@ -1614,22 +1609,9 @@ ENTRY main {
 
   MatchOptimizedHlo(hlo_text, hlo_ref);
 
-  float tolerance;
-  switch (data_type) {
-    case F32:
-      tolerance = 1e-6;
-      break;
-    case F16:
-      tolerance = 2e-4;
-      break;
-    case BF16:
-      tolerance = 2e-2;
-      break;
-    default:
-      ABSL_UNREACHABLE();
-  }
-  EXPECT_TRUE(RunAndCompare(hlo_text,
-                            ErrorSpec(/*aabs=*/tolerance, /*arel=*/tolerance)));
+  EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec(/*aabs=*/0, /*arel=*/0),
+                            /*reference_preprocessor=*/nullptr,
+                            /*args_max_bits_of_precision=*/6));
 }
 
 TEST_P(
