@@ -287,6 +287,17 @@ TEST(ExpandPresetsTest, ExpandWeightOnlyPtqPresetDefault) {
   EXPECT_THAT(spec.matcher().function_name().regex(),
               StrEq("^.*(conv|dot_general).*"));
   EXPECT_TRUE(spec.method().has_weight_only_ptq());
+
+  const WeightOnlyPtq& weight_only_ptq_spec = spec.method().weight_only_ptq();
+
+  ASSERT_THAT(weight_only_ptq_spec.input_quantized_types(), SizeIs(1));
+  ASSERT_TRUE(weight_only_ptq_spec.input_quantized_types().contains(1));
+  EXPECT_TRUE(
+      weight_only_ptq_spec.input_quantized_types().at(1).has_dimension_specs());
+
+  const QuantizedDimension& dimension_specs =
+      weight_only_ptq_spec.input_quantized_types().at(1).dimension_specs();
+  EXPECT_FALSE(dimension_specs.has_dimension());
 }
 
 }  // namespace
