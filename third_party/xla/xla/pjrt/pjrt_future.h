@@ -17,8 +17,10 @@ limitations under the License.
 #define XLA_PJRT_PJRT_FUTURE_H_
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -171,6 +173,10 @@ class PjRtFutureBase : public PjRtFutureMoveControl<
   }
 
  protected:
+  // Returns `true` if the future holds a unique value that can be passed to the
+  // caller only using move assignment.
+  static constexpr bool is_unique() { return !std::is_copy_constructible_v<T>; }
+
   // Wrapper for AsyncValueRef<T> that can be used by clients that don't
   // natively use TSL concurrency library. Stateless and stateful PjRtFuture<T>
   // specializations define their own Promise type inheriting from this one.
@@ -181,11 +187,8 @@ class PjRtFutureBase : public PjRtFutureMoveControl<
     Promise(Promise&& other) = default;
     Promise& operator=(Promise&& other) = default;
 
-    Promise(const Promise& other) : ref_(other.ref_.CopyRef()) {}
-    Promise& operator=(const Promise& other) {
-      ref_ = other.ref_.CopyRef();
-      return *this;
-    }
+    Promise(const Promise& other) = default;
+    Promise& operator=(const Promise& other) = default;
 
     operator bool() const { return static_cast<bool>(ref_); }  // NOLINT
 
@@ -211,7 +214,7 @@ class PjRtFutureBase : public PjRtFutureMoveControl<
       ref_.template emplace<T>(std::forward<Args>(args)...);
     }
 
-    tsl::AsyncValueRef<T> ExtractRef() && { return std::move(ref_); }
+    tsl::AsyncValueRef<T> release() { return std::move(ref_); }
 
     tsl::RCReference<tsl::AsyncValue> CopyRCRef() const {
       return ref_.CopyRCRef();
@@ -219,8 +222,22 @@ class PjRtFutureBase : public PjRtFutureMoveControl<
 
     tsl::AsyncValue* GetAsyncValue() const { return ref_.GetAsyncValue(); }
 
+#ifndef NDEBUG
+    int64_t AddFuture() { return num_futures_->fetch_add(1); }
+#endif
+
    private:
     tsl::AsyncValueRef<T> ref_;
+
+#ifndef NDEBUG
+    // In debug builds we track the number of futures created from a promise to
+    // detect when a promise for a move-only type can be accidentally shared by
+    // multiple futures. We wrap the counter into shared pointer because promise
+    // for a unique future is still copyable, but only one future can be created
+    // from all the copies.
+    std::shared_ptr<std::atomic<int64_t>> num_futures_ =
+        std::make_shared<std::atomic<int64_t>>(0);
+#endif
   };
 
   PjRtFutureBase() = default;
@@ -241,6 +258,15 @@ class PjRtFutureBase : public PjRtFutureMoveControl<
 
   void OnBlockEnd(PjRtFutureHelpers::ProfilingKeys keys) {
     if (on_block_end_) on_block_end_(std::move(keys));
+  }
+
+  void BlockUntilReady() {
+    CHECK(IsValid());
+    if (!promise().IsAvailable()) {
+      PjRtFutureHelpers::ProfilingKeys keys = OnBlockStart();
+      tsl::BlockUntilReady(promise());
+      OnBlockEnd(std::move(keys));
+    }
   }
 
  private:
@@ -315,17 +341,6 @@ class PjRtFuture : public internal::PjRtFutureBase<T> {
              /*on_block_start=*/nullptr,
              /*on_block_end=*/nullptr) {}
 
-  // Constructor used by clients that natively use TSL concurrency library.
-  //
-  // on_block_start is called before Await starts to block.
-  // on_block_end is called after Await finishes blocking.
-  explicit PjRtFuture(
-      tsl::AsyncValueRef<T> async_value,
-      PjRtFutureHelpers::OnBlockStartFn on_block_start = nullptr,
-      PjRtFutureHelpers::OnBlockEndFn on_block_end = nullptr)
-      : Base(std::move(async_value), std::move(on_block_start),
-             std::move(on_block_end)) {}
-
   // Constructor used by clients that don't natively use TSL concurrency library
   // and want to use the wrapped PjRtFuture<T>::Promise class.
   //
@@ -335,20 +350,42 @@ class PjRtFuture : public internal::PjRtFutureBase<T> {
       Promise promise,
       PjRtFutureHelpers::OnBlockStartFn on_block_start = nullptr,
       PjRtFutureHelpers::OnBlockEndFn on_block_end = nullptr)
-      : Base(std::move(promise).ExtractRef(), std::move(on_block_start),
-             std::move(on_block_end)) {}
+      : Base(promise.release(), std::move(on_block_start),
+             std::move(on_block_end)) {
+#ifndef NDEBUG
+    if constexpr (Base::is_unique()) {
+      DCHECK_EQ(promise.AddFuture(), 0)
+          << "Unique PjRtFuture cannot share a promise object";
+    }
+#endif
+  }
 
   // Blocks the calling thread until the future is ready, then returns the
   // final value.
-  T Await() {
-    CHECK(Base::IsValid());
-    if (!Base::promise().IsAvailable()) {
-      PjRtFutureHelpers::ProfilingKeys keys = Base::OnBlockStart();
-      BlockUntilReady(Base::promise());
-      Base::OnBlockEnd(std::move(keys));
-    }
+  T Await() & {
+    static_assert(
+        !Base::is_unique(),
+        "Unique PjRtFuture does not support Await() with copy semantics");
+
+    Base::BlockUntilReady();
     DCHECK(Base::promise().IsConcrete());
     return *Base::promise();
+  }
+
+  // Blocks the calling thread until the future is ready, then returns the
+  // final value.
+  T Await() && {
+    Base::BlockUntilReady();
+    DCHECK(Base::promise().IsConcrete());
+
+    if constexpr (Base::is_unique()) {
+      return std::move(*Base::promise());
+    } else {
+      // We can't move from the promise to the caller because for non-unique
+      // futures we can have multiple copies of the PjRtFuture sharing the
+      // same underlying promise object.
+      return *Base::promise();
+    }
   }
 
   // Registers callback to be called once the promise is ready, with the final
@@ -443,17 +480,13 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
       Promise promise,
       PjRtFutureHelpers::OnBlockStartFn on_block_start = nullptr,
       PjRtFutureHelpers::OnBlockEndFn on_block_end = nullptr)
-      : Base(std::move(promise).ExtractRef(), std::move(on_block_start),
+      : Base(promise.release(), std::move(on_block_start),
              std::move(on_block_end)) {}
 
   // Blocks the calling thread until the future is ready.
   absl::Status Await() {
     CHECK(Base::IsValid());
-    if (!Base::promise().IsAvailable()) {
-      PjRtFutureHelpers::ProfilingKeys keys = Base::OnBlockStart();
-      BlockUntilReady(Base::promise());
-      Base::OnBlockEnd(std::move(keys));
-    }
+    Base::BlockUntilReady();
     return Base::promise().IsError() ? Base::promise().GetError()
                                      : absl::OkStatus();
   }
