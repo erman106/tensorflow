@@ -137,7 +137,7 @@ absl::StatusOr<BufferAllocation::Slice> GetAllocationSlice(
 absl::StatusOr<bool> CanEmitFusedDynamicUpdateSliceInPlaceForGpu(
     const HloFusionInstruction* fusion,
     const BufferAssignment* buffer_assignment,
-    const std::vector<const HloInstruction*>& roots);
+    absl::Span<HloInstructionAdaptor const> roots);
 
 // Returns the dynamic-update-slice instructions defining the results of a
 // fusion node. A dynamic slice update is said to be "defining" of a result if
@@ -145,20 +145,16 @@ absl::StatusOr<bool> CanEmitFusedDynamicUpdateSliceInPlaceForGpu(
 // output of a bitcast of a dynamic slice update---since such bitcast may be
 // handled as a no-op.
 std::vector<const HloInstruction*> GetOutputDefiningDynamicUpdateSlices(
-    const std::vector<const HloInstruction*>& roots);
+    absl::Span<HloInstructionAdaptor const> roots);
 
 Shape GetShape(mlir::Value value);
 
-// `is_boundary` returns `true` for edges that are on the boundary of the
-// fusion, i.e., they go from an instruction inside the fusion to one outside,
-// or vice versa.
-// Note: when this is called with a fusion instruction, it will traverse into
-// the fusion (unless the boundary function stops it).
-const HloInstruction& FindNonTrivialHero(const HloInstruction& instr,
-                                         const HloFusionAdaptor& fusion);
+// Returns the first hero instruction reachable from `instr` as root. Hero
+// instruction can be in a different computation if the parent HloFusionAdaptor
+// is a producer-consumer fusion.
+HloInstructionAdaptor FindNonTrivialHero(const HloInstructionAdaptor& instr);
 
-// Like above, but assumes the instruction is inside an HloFusionInstruction.
-// Returns the instruction itself if it is an HloFusionInstruction.
+// Same as above, but fusion is the parent computation of the hlo instruction.
 const HloInstruction& FindNonTrivialHero(const HloInstruction& instr);
 
 /// Description of how to emit a given transposition.
@@ -192,13 +188,8 @@ struct TransposeDescription {
 std::optional<TransposeDescription> GetDescriptionForTiledTransposeEmitter(
     const HloInstruction& root, const HloInstruction& hero);
 
-// Checks if the instruction is elementwise and only has a single user. If
-// a fusion adaptor is provided, only checks for users within the fusion. If
-// `add_single_user_check` is true, then it is also checked whether `instr` has
-// at most 1 user.
-bool IsIntermediate(const HloInstruction* instr, int allowed_operand_count = 1,
-                    const HloFusionAdaptor* fusion = nullptr,
-                    bool add_single_user_check = false);
+// Checks if the instruction is elementwise.
+bool IsIntermediate(const HloInstruction* instr, int allowed_operand_count = 1);
 
 // Log the given module if the VLOG level is >= level.
 void VLogModule(int level, const llvm::Module& module);

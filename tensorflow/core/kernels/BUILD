@@ -2133,6 +2133,7 @@ tf_cuda_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -5138,7 +5139,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "sparse_reduce_op",
     prefix = "sparse_reduce_op",
-    deps = SPARSE_DEPS,
+    deps = SPARSE_DEPS + ["@com_google_absl//absl/status"],
 )
 
 tf_kernel_library(

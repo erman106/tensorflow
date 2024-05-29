@@ -310,9 +310,8 @@ std::unique_ptr<OperationPass<ModuleOp>> CreateNameAnonymousIteratorsPass();
 
 // Creates a pass that breaks up an island with multiple ops into multiple
 // islands, each with a single op. This pass intentionally does not propagate
-// control dependencies across newly created islands, a following pass will
-// handle this.
-// TODO(b/244596254) Implement followup pass for creating control deps.
+// control dependencies across newly created islands and is handled by
+// CreateTFExecutorUpdateControlDependenciesPass.
 std::unique_ptr<OperationPass<func::FuncOp>> CreateSplitIntoIslandPerOpPass();
 
 // Prints, but otherwise pipes through without changes, the current module.
@@ -533,10 +532,6 @@ CreateTPUResourceReadsWritesPartitioningPass();
 std::unique_ptr<OperationPass<ModuleOp>>
 CreateTPUAnnotateDynamicShapeInputsPass();
 
-// Creates a pass that identifies XLASharding ops in launch op for TPU
-// computation.
-std::unique_ptr<OperationPass<ModuleOp>> CreateTPUShardingIdentificationPass();
-
 // Creates a pass that moves `tf.AssignVariableOp` into a
 // `tf_device.parallel_execute` region if the `tf.AssignVariableOp` is the
 // only consumer of a `tf_device.parallel_execute` result.
@@ -670,7 +665,6 @@ enum MoveTransposeDirection { kBegin, kEnd };
 #define GEN_PASS_DECL_TPUREORDERREPLICATEANDPARTITIONEDINPUTSPASS
 #define GEN_PASS_DECL_TPURESOURCEREADFORWRITEPASS
 #define GEN_PASS_DECL_TPURESOURCEREADSWRITESPARTITIONINGPASS
-#define GEN_PASS_DECL_TPUSHARDINGIDENTIFICATIONPASS
 #define GEN_PASS_DECL_TPUSPACETODEPTHPASS
 #define GEN_PASS_DECL_TPUUPDATEEMBEDDINGENQUEUEOPINPUTSPASS
 #define GEN_PASS_DECL_TPUVALIDATEINPUTSPASS

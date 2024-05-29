@@ -39,20 +39,22 @@ namespace proxy {
 // DoRpc is a templated function that implements the logic of all RPC-wrapping
 // functions of `RpcHelper`, such as `RpcHelper::MakeArrayFromHostBuffer()`.
 template <typename Req, typename Resp>
-Future<absl::StatusOr<std::shared_ptr<Resp>>> DoRpc(
-    ClientSession* session, RequestMetadata metadata,
-    void (IfrtRequest::*set_req)(Req*), Resp* (IfrtResponse::*get_resp)(),
-    bool (IfrtResponse::*has_resp)() const, std::unique_ptr<Req> req) {
+Future<std::shared_ptr<Resp>> DoRpc(ClientSession* session,
+                                    RequestMetadata metadata,
+                                    void (IfrtRequest::*set_req)(Req*),
+                                    Resp* (IfrtResponse::*get_resp)(),
+                                    bool (IfrtResponse::*has_resp)() const,
+                                    std::unique_ptr<Req> req) {
   auto ifrt_req = std::make_unique<IfrtRequest>();
   *ifrt_req->mutable_request_metadata() = metadata;
   (ifrt_req.get()->*set_req)(req.release());
 
-  auto promise = Future<absl::StatusOr<std::shared_ptr<Resp>>>::CreatePromise();
-  auto on_ready = [promise, has_resp,
-                   get_resp](ClientSession::Response r) mutable {
+  auto promise = Future<std::shared_ptr<Resp>>::CreatePromise();
+  auto on_ready = [promise, has_resp, get_resp](
+                      absl::StatusOr<std::shared_ptr<IfrtResponse>> r) mutable {
     if (!r.ok()) {
-      LOG(ERROR) << "Connection to IFRT proxy server was terminated: "
-                 << r.status();
+      LOG_EVERY_N_SEC(ERROR, 10)
+          << "Connection to IFRT proxy server was terminated: " << r.status();
       promise.Set(absl::UnavailableError(
           absl::StrCat("Connection to IFRT proxy server was terminated: ",
                        r.status().ToString())));
@@ -100,7 +102,7 @@ Future<absl::StatusOr<std::shared_ptr<Resp>>> DoRpc(
   };
   session->Enqueue(std::move(ifrt_req)).OnReady(on_ready);
 
-  return Future<absl::StatusOr<std::shared_ptr<Resp>>>(promise);
+  return Future<std::shared_ptr<Resp>>(promise);
 }
 
 RequestMetadata RpcHelper::ManufactureRequestMetadata() {
@@ -140,6 +142,7 @@ RPC(CheckFuture, check_future);
 RPC(MakeArrayFromHostBuffer, make_array_from_host_buffer);
 RPC(AssembleArrayFromSingleDeviceArrays,
     assemble_array_from_single_device_arrays);
+RPC(RemapArrays, remap_arrays);
 RPC(DisassembleIntoSingleDeviceArrays, disassemble_into_single_device_arrays);
 RPC(CopyToHostBuffer, copy_to_host_buffer);
 RPC(CheckArrayReady, check_array_ready);

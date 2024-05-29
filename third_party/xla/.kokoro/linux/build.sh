@@ -40,21 +40,27 @@ function pull_docker_image_with_retries() {
   echo "TF_INFO_DOCKER_SHA,$(docker pull "$DOCKER_IMAGE" | sed -n '/Digest:/s/Digest: //g p')" >> "$KOKORO_ARTIFACTS_DIR/custom_sponge_config.csv"
 }
 
+# TODO(b/338885148): Remove this once the TF containers have cuDNN 9
+if is_linux_gpu_job ; then
+  DOCKER_IMAGE="gcr.io/tensorflow-sigs/build@sha256:dddcaf30321e9007103dce75c51b83fea3c06de462fcf41e7c6ae93f37fc3545"
+fi
+
 pull_docker_image_with_retries
+
+
 # Start a container in the background
-docker run --name xla -w /tf/xla -itd --rm \
-    -v "$KOKORO_ARTIFACTS_DIR/github/xla:/tf/xla" \
-    -v "$KOKORO_ARTIFACTS_DIR/pkg:/tf/pkg" \
+docker run --name xla -w /github/xla -itd --rm \
+    -v "./github:/github" \
     "$DOCKER_IMAGE" \
     bash
 
-TAGS_FILTER="-no_oss,-oss_excluded,-oss_serial"
+TAGS_FILTER="-no_oss"
 ADDITIONAL_FLAGS=""
 RBE_FLAGS=""
-TARGET_FILTERS="-@local_tsl//tsl/platform:subprocess_test -@local_tsl//tsl/platform/cloud:google_auth_provider_test -@local_tsl//tsl/platform/cloud:oauth_client_test"
+TARGET_FILTERS=""
 
 if is_linux_gpu_job ; then
-    TAGS_FILTER="$TAGS_FILTER,gpu,requires-gpu-nvidia,-no_gpu"
+    TAGS_FILTER="$TAGS_FILTER,requires-gpu-nvidia"
 
     # We are currently running XLA presubmits on machines with NVIDIA T4 GPUs,
     # which have a compute compatibility of 7.5. Se we filter out all the tests
@@ -62,36 +68,39 @@ if is_linux_gpu_job ; then
     UNSUPPORTED_GPU_TAGS="$(echo -requires-gpu-sm{80,86,89,90}{,-only})"
     TAGS_FILTER="${TAGS_FILTER},${UNSUPPORTED_GPU_TAGS// /,}"
 
-    ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --nobuild_tests_only --run_under=//tools/ci_build/gpu_build:parallel_gpu_execute"
+    ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --run_under=//tools/ci_build/gpu_build:parallel_gpu_execute"
     RBE_FLAGS="--config=rbe_linux_cuda_nvcc --jobs=150"
+    (
+      #TODO(b/338885148): Remove this block after TF was updated to cuDNN 9
+      sed -i 's/@sigbuild-r2\.17-clang_/@sigbuild-r2.17-clang-cudnn9_/g' ./github/xla/.bazelrc
+      echo "The following changes were made:"
+      git diff -- .bazelrc || true
+    )
     echo "***NOTE: nvidia-smi lists the highest CUDA version the driver supports, which may be different than the version of CUDA actually used!!***"
     nvidia-smi
 else
     TAGS_FILTER="$TAGS_FILTER,-gpu,-requires-gpu-nvidia"
     ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --config=nonccl"
+    TARGET_FILTERS="$TARGET_FILTERS -//xla/service/gpu/..."
 
     if is_linux_cpu_arm64_job ; then
-        TAGS_FILTER="$TAGS_FILTER,-no_aarch64"
-        ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --action_env PYTHON_BIN_PATH=/usr/bin/python3.11 --python_path=/usr/bin/python3.11"
-        # Some cross-compile tests are not working for XLA Linux Aarch64.
-        # TODO(ddunleavy): Revisit these when hermetic python is available.
-        TARGET_FILTERS="$TARGET_FILTERS -//xla/python_api:xla_shape_test -//xla/python_api:xla_literal_test -//xla/service:xla_aot_compile_stablehlo_cpu_test -//xla/tests:local_client_aot_test"
+        TAGS_FILTER="$TAGS_FILTER,-not_run:arm"
         RBE_FLAGS="--config=rbe_cross_compile_linux_arm64_xla --jobs=150"
     else
         RBE_FLAGS="--config=rbe_linux_cpu --jobs=150"
-        ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --nobuild_tests_only"
     fi
 fi
 
 # Build & test XLA
 docker exec xla bazel \
         test \
-        --build_tag_filters=$TAGS_FILTER  \
+        --build_tag_filters=$TAGS_FILTER \
         --test_tag_filters=$TAGS_FILTER \
         --test_output=errors \
         --keep_going \
+        --nobuild_tests_only \
         --features=layering_check \
-        --profile=/tf/pkg/profile.json.gz \
+        --profile=profile.json.gz \
         --flaky_test_attempts=3 \
         --config=warnings \
         $RBE_FLAGS \
@@ -100,7 +109,7 @@ docker exec xla bazel \
 
 
 # Print build time statistics, including critical path.
-docker exec xla bazel analyze-profile "/tf/pkg/profile.json.gz"
+docker exec xla bazel analyze-profile profile.json.gz
 
 # Stop container
 docker stop xla

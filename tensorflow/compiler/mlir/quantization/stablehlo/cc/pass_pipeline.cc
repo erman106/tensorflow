@@ -32,7 +32,6 @@ using ::stablehlo::quantization::CalibrationOptions;
 using ::stablehlo::quantization::DebuggerConfig;
 using ::stablehlo::quantization::PipelineConfig;
 using ::stablehlo::quantization::QuantizationSpecs;
-using ::stablehlo::quantization::StaticRangePtqPreset;
 
 void AddPreCalibrationPasses(OpPassManager& pm,
                              const CalibrationOptions& calibration_options,
@@ -51,7 +50,6 @@ void AddPreCalibrationPasses(OpPassManager& pm,
   }
   pm.addNestedPass<func::FuncOp>(
       CreateInsertCustomAggregationOpsPass(calibration_options));
-  pm.addPass(CreateIssueIDsOfCustomAggregationOpsPass());
 }
 
 void AddPostCalibrationPasses(OpPassManager& pm,

@@ -38,10 +38,10 @@ template <typename AttrType>
 bool EnsureAttribute(const DictionaryAttr& composite_attributes,
                      const std::string& attr_name, AttrType* out_attr) {
   Attribute attr = composite_attributes.get(attr_name);
-  if (!attr.isa_and_nonnull<AttrType>()) {
+  if (!mlir::isa_and_nonnull<AttrType>(attr)) {
     return false;
   }
-  if (AttrType content = attr.dyn_cast<AttrType>()) {
+  if (AttrType content = mlir::dyn_cast<AttrType>(attr)) {
     *out_attr = content;
     return true;
   } else {
@@ -52,6 +52,10 @@ bool EnsureAttribute(const DictionaryAttr& composite_attributes,
 // Changes a DenseIntElementsAttr **containing I64** elements to an I32 Vector.
 bool DenseI64AttrToI32Vector(const DenseIntElementsAttr& dense_attr,
                              std::vector<int32_t>* out_vec);
+
+// Gets boolean from composite attrs if it exists.
+std::optional<bool> GetBoolFromCompositeAttr(
+    const DictionaryAttr& composite_attrs, llvm::StringRef attr_name);
 
 // Given a DictionaryAttr, checks if it has a DenseIntElementsAttr attribute
 // with the name attr_name. If so, extracts its values and stores as a vector

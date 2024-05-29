@@ -81,7 +81,8 @@ absl::StatusOr<bool> RunOptimizer(
       /*should_process=*/should_process,
       /*acceptable_formatting=*/acceptable_formatting,
       /*reuse_pipelined_op_buffer=*/reuse_pipelined_op_buffer,
-      should_allow_loop_variant_parameter_in_chain, postprocess_backward_peeled,
+      should_allow_loop_variant_parameter_in_chain,
+      /*should_allow_control_dependencies=*/false, postprocess_backward_peeled,
       postprocess_backward_rotated};
   HloPassPipeline pass("optimizer");
   pass.AddPass<HloVerifier>(/*layout_sensitive=*/false,
@@ -1906,13 +1907,13 @@ TEST_F(CollectivePipelinerTest,
     xla::FrontendAttributes attributes = instr->frontend_attributes();
     (*attributes.mutable_map())[kAttr] = "1";
     instr->set_frontend_attributes(attributes);
-    return OkStatus();
+    return absl::OkStatus();
   };
   auto postprocess_rotated = [&](HloInstruction* instr) {
     xla::FrontendAttributes attributes = instr->frontend_attributes();
     (*attributes.mutable_map())[kAttr] = "2";
     instr->set_frontend_attributes(attributes);
-    return OkStatus();
+    return absl::OkStatus();
   };
   auto module = ParseAndReturnUnverifiedModule(hlo_string, config_).value();
   EXPECT_TRUE(RunOptimizer(module.get(), /*last_run=*/true, 0,

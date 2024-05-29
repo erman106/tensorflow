@@ -36,6 +36,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/layout.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
+#include "xla/pjrt/c/pjrt_c_api_layouts_extension.h"
 #include "xla/pjrt/c/pjrt_c_api_profiler_extension.h"
 #include "xla/pjrt/distributed/key_value_store_interface.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -135,6 +136,21 @@ PJRT_TopologyDescriptionDeleter MakeTopologyDescriptionDeleter(
 
     pjrt::LogFatalIfPjrtError(
         api->PJRT_TopologyDescription_Destroy(&destroy_args), api);
+  };
+}
+
+PJRT_Layouts_MemoryLayoutDeleter MakeMemoryLayoutDeleter(const PJRT_Api* api) {
+  PJRT_Layouts_Extension* ext_api =
+      FindExtension<PJRT_Layouts_Extension>(api, PJRT_Extension_Type_Layouts);
+  CHECK_NE(ext_api, nullptr) << "MakeMemoryLayoutDeleter passed PJRT_Api that "
+                                "doesn't support layouts extension";
+  return [api, ext_api](PJRT_Layouts_MemoryLayout* layout) -> void {
+    PJRT_Layouts_MemoryLayout_Destroy_Args args;
+    args.struct_size = PJRT_Layouts_MemoryLayout_Destroy_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.layout = layout;
+    pjrt::LogFatalIfPjrtError(ext_api->PJRT_Layouts_MemoryLayout_Destroy(&args),
+                              api);
   };
 }
 
@@ -244,6 +260,10 @@ PJRT_Buffer_Type ConvertToPjRtBufferType(xla::PrimitiveType type) {
       return PJRT_Buffer_Type::PJRT_Buffer_Type_INVALID;
     case xla::PrimitiveType::PRED:
       return PJRT_Buffer_Type::PJRT_Buffer_Type_PRED;
+    case xla::PrimitiveType::TOKEN:
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_TOKEN;
+    case xla::PrimitiveType::S2:
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_S2;
     case xla::PrimitiveType::S4:
       return PJRT_Buffer_Type::PJRT_Buffer_Type_S4;
     case xla::PrimitiveType::S8:
@@ -254,6 +274,8 @@ PJRT_Buffer_Type ConvertToPjRtBufferType(xla::PrimitiveType type) {
       return PJRT_Buffer_Type::PJRT_Buffer_Type_S32;
     case xla::PrimitiveType::S64:
       return PJRT_Buffer_Type::PJRT_Buffer_Type_S64;
+    case xla::PrimitiveType::U2:
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_U2;
     case xla::PrimitiveType::U4:
       return PJRT_Buffer_Type::PJRT_Buffer_Type_U4;
     case xla::PrimitiveType::U8:
@@ -297,6 +319,10 @@ xla::PrimitiveType ConvertFromPjRtBufferType(PJRT_Buffer_Type type) {
   switch (type) {
     case PJRT_Buffer_Type::PJRT_Buffer_Type_PRED:
       return xla::PrimitiveType::PRED;
+    case PJRT_Buffer_Type::PJRT_Buffer_Type_TOKEN:
+      return xla::PrimitiveType::TOKEN;
+    case PJRT_Buffer_Type::PJRT_Buffer_Type_S2:
+      return xla::PrimitiveType::S2;
     case PJRT_Buffer_Type::PJRT_Buffer_Type_S4:
       return xla::PrimitiveType::S4;
     case PJRT_Buffer_Type::PJRT_Buffer_Type_S8:
@@ -307,6 +333,8 @@ xla::PrimitiveType ConvertFromPjRtBufferType(PJRT_Buffer_Type type) {
       return xla::PrimitiveType::S32;
     case PJRT_Buffer_Type::PJRT_Buffer_Type_S64:
       return xla::PrimitiveType::S64;
+    case PJRT_Buffer_Type::PJRT_Buffer_Type_U2:
+      return xla::PrimitiveType::U2;
     case PJRT_Buffer_Type::PJRT_Buffer_Type_U4:
       return xla::PrimitiveType::U4;
     case PJRT_Buffer_Type::PJRT_Buffer_Type_U8:
@@ -400,7 +428,7 @@ xla::PjRtClient::HostBufferSemantics ConvertFromPjRtHostBufferSemantics(
 
 xla::PjRtFuture<> ConvertCEventToCppFuture(PJRT_Event* c_event,
                                            const PJRT_Api* c_api) {
-  using absl::Status, xla::PjRtFuture;
+  using xla::PjRtFuture;
   PJRT_Event_OnReady_Args event_onready_args;
   event_onready_args.struct_size = PJRT_Event_OnReady_Args_STRUCT_SIZE;
   event_onready_args.extension_start = nullptr;
@@ -896,14 +924,21 @@ absl::Span<const int64_t> GetDimensions(const PJRT_Api* api,
   return {args.dims, args.num_dims};
 }
 
-PJRT_Buffer_MemoryLayout GetMemoryLayout(const PJRT_Api* api,
-                                         PJRT_Buffer* buffer) {
-  PJRT_Buffer_GetMemoryLayout_Args args;
-  args.struct_size = PJRT_Buffer_GetMemoryLayout_Args_STRUCT_SIZE;
+std::unique_ptr<PJRT_Layouts_MemoryLayout, PJRT_Layouts_MemoryLayoutDeleter>
+GetMemoryLayout(const PJRT_Api* api, PJRT_Buffer* buffer) {
+  PJRT_Layouts_PJRT_Buffer_MemoryLayout_Args args;
+  args.struct_size = PJRT_Layouts_PJRT_Buffer_MemoryLayout_Args_STRUCT_SIZE;
   args.extension_start = nullptr;
   args.buffer = buffer;
-  LogFatalIfPjrtError(api->PJRT_Buffer_GetMemoryLayout(&args), api);
-  return args.layout;
+  PJRT_Layouts_Extension* ext_api =
+      FindExtension<PJRT_Layouts_Extension>(api, PJRT_Extension_Type_Layouts);
+  CHECK_NE(ext_api, nullptr) << "GetMemoryLayout called with PJRT_Api that "
+                                "doesn't support layouts extension";
+  LogFatalIfPjrtError(ext_api->PJRT_Layouts_PJRT_Buffer_MemoryLayout(&args),
+                      api);
+  return std::unique_ptr<PJRT_Layouts_MemoryLayout,
+                         PJRT_Layouts_MemoryLayoutDeleter>(
+      args.layout, MakeMemoryLayoutDeleter(api));
 }
 
 absl::StatusOr<xla::Shape> BuildXlaShapeFromC(

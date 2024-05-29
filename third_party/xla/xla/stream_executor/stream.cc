@@ -38,56 +38,18 @@ limitations under the License.
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/stacktrace.h"
+#include "tsl/platform/statusor.h"
 
 namespace stream_executor {
 
 Stream::Stream(StreamExecutor *parent)
-    : parent_(parent), implementation_(nullptr), status_(absl::OkStatus()) {}
-
-absl::Status Stream::Initialize(
-    std::optional<std::variant<StreamPriority, int>> priority) {
-  absl::MutexLock lock(&mu_);
-  if (implementation_ != nullptr) {
-    return absl::InternalError(
-        "stream appears to already have been initialized");
-  }
-  implementation_ = parent_->GetStreamImplementation();
-  if (priority.has_value()) {
-    if (std::holds_alternative<StreamPriority>(*priority)) {
-      implementation_->SetPriority(std::get<StreamPriority>(*priority));
-    } else {
-      implementation_->SetPriority(std::get<int>(*priority));
-    }
-  }
-
-  if (parent_->AllocateStream(this)) {
-    // Successful initialization!
-    return absl::OkStatus();
-  }
-
-  return absl::InternalError("failed to allocate stream during initialization");
-}
-
-Stream::~Stream() {
-  // Ensure the stream is completed.
-  auto status = BlockHostUntilDone();
-  if (!status.ok()) {
-    LOG(WARNING) << "Error blocking host until done in stream destructor: "
-                 << status;
-  }
-
-  if (implementation_ != nullptr) {
-    parent_->DeallocateStream(this);
-  }
-}
-
-std::variant<StreamPriority, int> Stream::priority() const {
-  return implementation_->priority();
+    : parent_(parent), status_(absl::OkStatus()) {
+  CHECK_NE(parent, nullptr);
 }
 
 Stream::PlatformSpecificHandle Stream::platform_specific_handle() const {
   PlatformSpecificHandle handle;
-  handle.stream = implementation_->platform_specific_stream();
+  handle.stream = platform_specific_stream();
   return handle;
 }
 
@@ -143,9 +105,9 @@ absl::StatusOr<Stream *> Stream::GetOrCreateSubStream() {
   }
 
   // No streams are reusable; create a new stream.
-  sub_streams_.emplace_back(std::make_unique<Stream>(parent_), false);
-  Stream *sub_stream = sub_streams_.back().first.get();
-  TF_RETURN_IF_ERROR(sub_stream->Initialize());
+  TF_ASSIGN_OR_RETURN(auto stream, parent_->CreateStream());
+  Stream *sub_stream = stream.get();
+  sub_streams_.emplace_back(std::move(stream), false);
   VLOG(1) << "stream=" << this << " created new sub_stream=" << sub_stream;
 
   return sub_stream;

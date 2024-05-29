@@ -26,6 +26,7 @@ limitations under the License.
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/ImplicitLocOpBuilder.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
@@ -33,6 +34,7 @@ limitations under the License.
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/IR/ValueRange.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "xla/service/gpu/fusions/mlir/ir/xla_gpu_ops.h"
@@ -95,7 +97,7 @@ struct RewriteShuffleReduce : mlir::OpRewritePattern<ShuffleReduceOp> {
   mlir::LogicalResult matchAndRewrite(
       ShuffleReduceOp op, mlir::PatternRewriter& rewriter) const override {
     int max_distance =
-        op->getAttr("max_distance").cast<mlir::IntegerAttr>().getInt();
+        mlir::cast<mlir::IntegerAttr>(op->getAttr("max_distance")).getInt();
     // TODO(jreiffers): Do this in a verifier.
     if (max_distance & (max_distance - 1) || max_distance >= WarpSize()) {
       return op->emitOpError("max_distance must be a power of 2 < WarpSize()");
@@ -139,11 +141,23 @@ struct RewriteShuffleReduce : mlir::OpRewritePattern<ShuffleReduceOp> {
       };
 
       auto shuffle = [&](mlir::Value value) -> mlir::Value {
-        if (value.getType().isa<mlir::ComplexType>()) {
+        if (mlir::isa<mlir::ComplexType>(value.getType())) {
           return b.create<mlir::complex::CreateOp>(
               value.getType(),
               shuffle_int_or_float(b.create<mlir::complex::ReOp>(value)),
               shuffle_int_or_float(b.create<mlir::complex::ImOp>(value)));
+        }
+        if (value.getType().isUnsignedInteger()) {
+          auto ty = value.getType();
+          auto signless_ty = b.getIntegerType(ty.getIntOrFloatBitWidth());
+          value = b.create<mlir::UnrealizedConversionCastOp>(
+                       mlir::TypeRange{signless_ty}, value)
+                      .getResult(0);
+          value = shuffle_int_or_float(value);
+          value = b.create<mlir::UnrealizedConversionCastOp>(
+                       mlir::TypeRange{ty}, value)
+                      .getResult(0);
+          return value;
         }
         return shuffle_int_or_float(value);
       };

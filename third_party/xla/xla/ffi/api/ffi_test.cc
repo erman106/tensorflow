@@ -17,11 +17,17 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/strings/match.h"
 #include "xla/ffi/call_frame.h"
+#include "xla/ffi/execution_context.h"
 #include "xla/ffi/ffi_api.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/xla_data.pb.h"
@@ -29,7 +35,6 @@ limitations under the License.
 #include "tsl/platform/status_matchers.h"
 #include "tsl/platform/test.h"
 #include "tsl/platform/test_benchmark.h"
-
 namespace xla::ffi {
 
 namespace {
@@ -37,7 +42,27 @@ namespace {
 using ::testing::HasSubstr;
 using ::tsl::testing::StatusIs;
 
+enum class Int32BasedEnum : int32_t {
+  kOne = 1,
+  kTwo = 2,
+};
+
+constexpr const int64_t kI32MaxValue =
+    static_cast<int64_t>(std::numeric_limits<int32_t>::max());
+
+enum class Int64BasedEnum : int64_t {
+  kOne = kI32MaxValue + 1,
+  kTwo = kI32MaxValue + 2,
+};
+
 }  // namespace
+
+}  // namespace xla::ffi
+
+XLA_FFI_REGISTER_ENUM_ATTR_DECODING(::xla::ffi::Int32BasedEnum);
+XLA_FFI_REGISTER_ENUM_ATTR_DECODING(::xla::ffi::Int64BasedEnum);
+
+namespace xla::ffi {
 
 TEST(FfiTest, DataTypeEnumValue) {
   // Verify that xla::PrimitiveType and xla::ffi::DataType use the same
@@ -61,6 +86,11 @@ TEST(FfiTest, DataTypeEnumValue) {
   EXPECT_EQ(encoded(PrimitiveType::F64), encoded(DataType::F64));
 
   EXPECT_EQ(encoded(PrimitiveType::BF16), encoded(DataType::BF16));
+
+  EXPECT_EQ(encoded(PrimitiveType::C64), encoded(DataType::C64));
+  EXPECT_EQ(encoded(PrimitiveType::C128), encoded(DataType::C128));
+
+  EXPECT_EQ(encoded(PrimitiveType::TOKEN), encoded(DataType::TOKEN));
 }
 
 TEST(FfiTest, BufferBaseArgument) {
@@ -166,6 +196,23 @@ TEST(FfiTest, WrongTypeBufferArgument) {
                HasSubstr("Wrong buffer dtype: expected F32 but got S32")));
 }
 
+TEST(FfiTest, TokenArgument) {
+  CallFrameBuilder builder;
+  builder.AddBufferArg(se::DeviceMemoryBase(), PrimitiveType::TOKEN,
+                       /*dims=*/{});
+  auto call_frame = builder.Build();
+
+  auto fn = [&](Token tok) {
+    EXPECT_EQ(tok.data, nullptr);
+    EXPECT_EQ(tok.dimensions.size(), 0);
+    return ffi::Error::Success();
+  };
+
+  auto handler = Ffi::Bind().Arg<Token>().To(fn);
+  auto status = Call(*handler, call_frame);
+  TF_ASSERT_OK(status);
+}
+
 TEST(FfiTest, AutoBinding) {
   static constexpr char kI32[] = "i32";
 
@@ -264,22 +311,36 @@ TEST(FfiTest, BindingPlatformStreamInference) {
 
 TEST(FfiTest, ArrayAttr) {
   CallFrameBuilder::AttributesBuilder attrs;
-  attrs.Insert("arr", std::vector<int32_t>({1, 2, 3, 4}));
+  attrs.Insert("arr0", std::vector<int8_t>({1, 2, 3, 4}));
+  attrs.Insert("arr1", std::vector<int16_t>({1, 2, 3, 4}));
+  attrs.Insert("arr2", std::vector<int32_t>({1, 2, 3, 4}));
+  attrs.Insert("arr3", std::vector<int64_t>({1, 2, 3, 4}));
+  attrs.Insert("arr4", std::vector<float>({1, 2, 3, 4}));
+  attrs.Insert("arr5", std::vector<double>({1, 2, 3, 4}));
 
   CallFrameBuilder builder;
   builder.AddAttributes(attrs.Build());
   auto call_frame = builder.Build();
 
-  auto fn = [&](Span<const int32_t> arr) {
-    EXPECT_EQ(arr.size(), 4);
-    EXPECT_EQ(arr[0], 1);
-    EXPECT_EQ(arr[1], 2);
-    EXPECT_EQ(arr[2], 3);
-    EXPECT_EQ(arr[3], 4);
+  auto fn = [&](auto arr0, auto arr1, auto arr2, auto arr3, auto arr4,
+                auto arr5) {
+    EXPECT_EQ(arr0, Span<const int8_t>({1, 2, 3, 4}));
+    EXPECT_EQ(arr1, Span<const int16_t>({1, 2, 3, 4}));
+    EXPECT_EQ(arr2, Span<const int32_t>({1, 2, 3, 4}));
+    EXPECT_EQ(arr3, Span<const int64_t>({1, 2, 3, 4}));
+    EXPECT_EQ(arr4, Span<const float>({1, 2, 3, 4}));
+    EXPECT_EQ(arr5, Span<const double>({1, 2, 3, 4}));
     return Error::Success();
   };
 
-  auto handler = Ffi::Bind().Attr<Span<const int32_t>>("arr").To(fn);
+  auto handler = Ffi::Bind()
+                     .Attr<Span<const int8_t>>("arr0")
+                     .Attr<Span<const int16_t>>("arr1")
+                     .Attr<Span<const int32_t>>("arr2")
+                     .Attr<Span<const int64_t>>("arr3")
+                     .Attr<Span<const float>>("arr4")
+                     .Attr<Span<const double>>("arr5")
+                     .To(fn);
   auto status = Call(*handler, call_frame);
 
   TF_ASSERT_OK(status);
@@ -307,6 +368,101 @@ TEST(FfiTest, PointerAttr) {
 
   auto handler = Ffi::Bind().Attr<Pointer<std::string>>("ptr").To(fn);
   auto status = Call(*handler, call_frame);
+
+  TF_ASSERT_OK(status);
+}
+
+TEST(FfiTest, EnumAttr) {
+  CallFrameBuilder::AttributesBuilder attrs;
+  attrs.Insert("i32_one", static_cast<std::underlying_type_t<Int32BasedEnum>>(
+                              Int32BasedEnum::kOne));
+  attrs.Insert("i32_two", static_cast<std::underlying_type_t<Int32BasedEnum>>(
+                              Int32BasedEnum::kTwo));
+  attrs.Insert("i64_one", static_cast<std::underlying_type_t<Int64BasedEnum>>(
+                              Int64BasedEnum::kOne));
+  attrs.Insert("i64_two", static_cast<std::underlying_type_t<Int64BasedEnum>>(
+                              Int64BasedEnum::kTwo));
+
+  CallFrameBuilder builder;
+  builder.AddAttributes(attrs.Build());
+  auto call_frame = builder.Build();
+
+  auto fn = [&](Int32BasedEnum i32_one, Int32BasedEnum i32_two,
+                Int64BasedEnum i64_one, Int64BasedEnum i64_two) {
+    EXPECT_EQ(i32_one, Int32BasedEnum::kOne);
+    EXPECT_EQ(i32_two, Int32BasedEnum::kTwo);
+    EXPECT_EQ(i64_one, Int64BasedEnum::kOne);
+    EXPECT_EQ(i64_two, Int64BasedEnum::kTwo);
+    return Error::Success();
+  };
+
+  auto handler = Ffi::Bind()
+                     .Attr<Int32BasedEnum>("i32_one")
+                     .Attr<Int32BasedEnum>("i32_two")
+                     .Attr<Int64BasedEnum>("i64_one")
+                     .Attr<Int64BasedEnum>("i64_two")
+                     .To(fn);
+
+  auto status = Call(*handler, call_frame);
+
+  TF_ASSERT_OK(status);
+}
+
+TEST(FfiTest, WrongEnumAttrType) {
+  CallFrameBuilder::AttributesBuilder attrs;
+  attrs.Insert("i32_enum", 42u);
+
+  CallFrameBuilder builder;
+  builder.AddAttributes(attrs.Build());
+  auto call_frame = builder.Build();
+
+  auto fn = [](Int32BasedEnum) { return Error::Success(); };
+
+  auto handler = Ffi::Bind().Attr<Int32BasedEnum>("i32_enum").To(fn);
+
+  auto status = Call(*handler, call_frame);
+
+  EXPECT_TRUE(absl::StrContains(
+      status.message(),
+      "Failed to decode all FFI handler operands (bad operands at: 0)"))
+      << "status.message():\n"
+      << status.message() << "\n";
+
+  EXPECT_TRUE(absl::StrContains(status.message(),
+                                "Wrong scalar data type: expected 4 but got"))
+      << "status.message():\n"
+      << status.message() << "\n";
+}
+
+struct MyData {
+  static TypeId id;
+  std::string str;
+};
+
+TypeId MyData::id = {};  // zero-initialize type id
+XLA_FFI_REGISTER_TYPE(GetXlaFfiApi(), "my_data", &MyData::id);
+
+TEST(FfiTest, UserData) {
+  MyData data{"foo"};
+
+  ExecutionContext execution_context;
+  TF_ASSERT_OK(execution_context.Insert(
+      ExecutionContext::TypeId(MyData::id.type_id), &data));
+
+  CallFrameBuilder builder;
+  auto call_frame = builder.Build();
+
+  auto fn = [&](MyData* data) {
+    EXPECT_EQ(data->str, "foo");
+    return Error::Success();
+  };
+
+  auto handler = Ffi::Bind().Ctx<UserData<MyData>>().To(fn);
+
+  CallOptions options;
+  options.execution_context = &execution_context;
+
+  auto status = Call(*handler, call_frame, options);
 
   TF_ASSERT_OK(status);
 }

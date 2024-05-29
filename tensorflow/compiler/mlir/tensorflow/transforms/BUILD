@@ -147,6 +147,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:attribute_utils",
         "//tensorflow/core:framework",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
     ],
 )
 
@@ -298,6 +299,7 @@ cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
     ],
 )
 
@@ -531,7 +533,6 @@ cc_library(
         "tpu_reorder_replicate_and_partitioned_inputs.cc",
         "tpu_resource_partitioning.cc",
         "tpu_resource_read_for_write.cc",
-        "tpu_sharding_identification_pass.cc",
         "tpu_space_to_depth_pass.cc",
         "tpu_update_embedding_enqueue_op_inputs.cc",
         "tpu_validate_inputs.cc",
@@ -1034,6 +1035,7 @@ cc_library(
         "//tensorflow/core:framework",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
     ],
 )
 
@@ -1045,6 +1047,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
         "@local_xla//xla:shape_util",
         "@local_xla//xla/mlir_hlo",
         "@local_xla//xla/stream_executor/tpu:c_api_conversions",
@@ -1067,6 +1070,7 @@ cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
         "@local_tsl//tsl/platform:path",
     ],
 )

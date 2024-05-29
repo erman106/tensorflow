@@ -90,7 +90,7 @@ struct CheckShapeAssertionsPass
   void runOnOperation() final {
     mlir::func::FuncOp func_op = getOperation();
     func_op.walk([this](mlir::stablehlo::CustomCallOp op) {
-      if (!op.getCallTargetName().equals(shapeAssertionName)) return;
+      if (op.getCallTargetName() != shapeAssertionName) return;
       if (!enable_shape_assertions) {
         op.erase();
         return;
@@ -147,14 +147,14 @@ struct CheckShapeAssertionsPass
     }
     if (!op.getBackendConfig().empty())
       return op.emitError() << "expects an empty backend_config";
-    if (!op.getCallTargetName().equals(shapeAssertionName))
+    if (op.getCallTargetName() != shapeAssertionName)
       return op.emitError() << "expects @shape_assertion";
     if (!op.getHasSideEffect())
       return op.emitError() << "expects has_side_effect=true";
 
     // input[0] (assert_what) : tensor<i1>
     auto assertWhatType =
-        op.getInputs()[0].getType().dyn_cast<mlir::ShapedType>();
+        mlir::dyn_cast<mlir::ShapedType>(op.getInputs()[0].getType());
     if (!assertWhatType || !assertWhatType.hasRank() ||
         assertWhatType.getRank() != 0 ||
         !assertWhatType.getElementType().isSignlessInteger() ||
@@ -165,7 +165,7 @@ struct CheckShapeAssertionsPass
     // input[1:] (error_message_inputs) : tensor<i32> or tensor<i64>
     for (int i = 0; i < nrErrorMessageInputs; ++i) {
       auto errorMessageInputType =
-          op.getInputs()[i + 1].getType().dyn_cast<mlir::ShapedType>();
+          mlir::dyn_cast<mlir::ShapedType>(op.getInputs()[i + 1].getType());
       if (!errorMessageInputType || !errorMessageInputType.hasRank() ||
           errorMessageInputType.getRank() != 0 ||
           !errorMessageInputType.getElementType().isSignlessInteger() ||
@@ -202,8 +202,7 @@ struct CheckShapeAssertionsPass
   }
 
   llvm::StringRef getErrorMessage(mlir::stablehlo::CustomCallOp op) const {
-    return op->getAttr(errorMessageAttrName)
-        .cast<mlir::StringAttr>()
+    return mlir::cast<mlir::StringAttr>(op->getAttr(errorMessageAttrName))
         .getValue();
   }
 
@@ -320,7 +319,7 @@ absl::Status ValidateStaticShapes(mlir::ModuleOp module) {
     // It's sufficient to only check results because operands either come from
     // results or from block arguments which are checked below.
     auto hasDynamicShape = [](mlir::Value value) {
-      auto shaped_type = value.getType().dyn_cast<mlir::ShapedType>();
+      auto shaped_type = mlir::dyn_cast<mlir::ShapedType>(value.getType());
       return shaped_type ? !shaped_type.hasStaticShape() : false;
     };
     bool opHasDynamicShapes = false;
@@ -335,8 +334,7 @@ absl::Status ValidateStaticShapes(mlir::ModuleOp module) {
     }
 
     auto customCall = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op);
-    if (customCall &&
-        customCall.getCallTargetName().equals(shapeAssertionName)) {
+    if (customCall && customCall.getCallTargetName() == shapeAssertionName) {
       moduleHasShapeAssertions = true;
       op->emitOpError() << "has residual shape assertions";
     }

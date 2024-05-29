@@ -21,6 +21,7 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -70,7 +71,7 @@ mlir::LogicalResult CreateSplitOp(const int num_split,
   // Correctly set output shapes of split op output if input shape is statically
   // known.
   mlir::Type output_type;
-  auto input_type = src_input.getType().cast<mlir::TensorType>();
+  auto input_type = mlir::cast<mlir::TensorType>(src_input.getType());
 
   if (input_type.hasRank()) {
     if (input_type.getShape()[split_dimension] == mlir::ShapedType::kDynamic) {
@@ -122,7 +123,7 @@ mlir::TF::ConcatOp CreateConcatOp(const int concat_dimension,
   // across logical devices, we refer to the shape of 0th logical device
   // computation output.
   mlir::Type output_type;
-  auto input_type = inputs[0].getType().cast<mlir::TensorType>();
+  auto input_type = mlir::cast<mlir::TensorType>(inputs[0].getType());
 
   if (input_type.hasRank()) {
     if (input_type.getShape()[concat_dimension] == mlir::ShapedType::kDynamic) {
@@ -294,9 +295,9 @@ mlir::LogicalResult DecodeShardingAttribute(const std::string& shard_str,
 mlir::LogicalResult DecodeShardingAttribute(mlir::Attribute shard_attr,
                                             xla::OpSharding& sharding,
                                             bool report_error) {
-  if (!shard_attr.isa<mlir::StringAttr>()) return mlir::failure();
+  if (!mlir::isa<mlir::StringAttr>(shard_attr)) return mlir::failure();
 
-  auto shard_str = shard_attr.cast<mlir::StringAttr>().getValue().str();
+  auto shard_str = mlir::cast<mlir::StringAttr>(shard_attr).getValue().str();
   return DecodeShardingAttribute(shard_str, sharding, report_error);
 }
 
@@ -350,7 +351,8 @@ mlir::LogicalResult ExtractInputsForLogicalDevices(
 
     xla::OpSharding sharding;
     if (DecodeShardingAttribute(
-            sharding_attr.cast<mlir::StringAttr>().getValue().str(), sharding)
+            mlir::cast<mlir::StringAttr>(sharding_attr).getValue().str(),
+            sharding)
             .failed()) {
       return cluster_func.emitError("incorrect sharding format for inputs");
     }
@@ -443,13 +445,14 @@ mlir::LogicalResult ParseAndValidateOutputSharding(
        llvm::enumerate(output_sharding_attrs)) {
     const auto& output_sharding = output_sharding_and_index.value();
     const int sharding_index = output_sharding_and_index.index();
-    if (!output_sharding.isa<mlir::StringAttr>())
+    if (!mlir::isa<mlir::StringAttr>(output_sharding))
       return cluster_func.emitError(llvm::formatv(
           "non-string output sharding at index {0}", sharding_index));
 
     xla::OpSharding sharding;
     if (DecodeShardingAttribute(
-            output_sharding.cast<mlir::StringAttr>().getValue().str(), sharding)
+            mlir::cast<mlir::StringAttr>(output_sharding).getValue().str(),
+            sharding)
             .failed()) {
       return cluster_func.emitError("incorrect sharding format for outputs");
     }
@@ -661,7 +664,7 @@ mlir::LogicalResult GetOutputTypesForLogicalDeviceComputation(
     const auto output_index = result_and_index.index();
     const auto& output_sharding = output_sharding_config[output_index];
     const auto cluster_func_output_type =
-        result_and_index.value().getType().cast<mlir::TensorType>();
+        mlir::cast<mlir::TensorType>(result_and_index.value().getType());
 
     // If output shape of cluster func is statically known and output is tiled
     // sharded, then the corresponding output shape of cluster func must be
@@ -813,12 +816,16 @@ llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 4> GetMetadataArgumentMapping(
 
     const auto sharding_type = sharding.type();
     if (sharding_type == xla::OpSharding::OTHER) {
-      for (const auto& device : sharding.tile_assignment_devices())
+      for (const auto& device : sharding.tile_assignment_devices()) {
+        CHECK(device >= 0 && device < input_mappings.size());
         input_mappings[device].push_back(idx);
+      }
     } else if (sharding_type == xla::OpSharding::REPLICATED) {
       for (auto& input : input_mappings) input.push_back(idx);
     } else {
       assert(sharding_type == xla::OpSharding::MAXIMAL);
+      CHECK(sharding.tile_assignment_devices(0) >= 0 &&
+            sharding.tile_assignment_devices(0) < input_mappings.size());
       input_mappings[sharding.tile_assignment_devices(0)].push_back(idx);
     }
   }

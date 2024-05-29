@@ -22,6 +22,7 @@ limitations under the License.
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
@@ -55,6 +56,7 @@ limitations under the License.
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"  // from @llvm-project
 #include "mlir/Dialect/SCF/IR/SCF.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
+#include "mlir/Dialect/Vector/IR/VectorOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
@@ -74,9 +76,12 @@ limitations under the License.
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/mlir/tools/mlir_replay/public/compiler_trace.pb.h"
+#include "xla/mlir/tools/mlir_replay/public/compiler_trace_instrumentation.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/service/buffer_assignment.h"
+#include "xla/service/dump.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/fusions/mlir/computation_partitioner.h"
 #include "xla/service/gpu/fusions/mlir/elemental_hlo_to_mlir.h"
@@ -149,8 +154,31 @@ bool Needs64Bits(const Shape& shape) {
                          : absl::c_any_of(shape.tuple_shapes(), Needs64Bits);
 }
 
+bool Is64BitIndex(const HloInstruction* instr, int operand) {
+  const auto& shape = instr->operand(operand)->shape();
+  return shape.element_type() == PrimitiveType::S64 ||
+         shape.element_type() == PrimitiveType::U64;
+}
+
 bool Needs64BitIndices(const HloComputation* computation) {
   for (auto* instr : computation->instructions()) {
+    // Check if any HLO instructions directly take 64 bit indices as operands.
+    switch (instr->opcode()) {
+      case HloOpcode::kDynamicSlice:
+      case HloOpcode::kDynamicUpdateSlice:
+        for (int i = 1; i < instr->operand_count(); ++i) {
+          if (Is64BitIndex(instr, i)) return true;
+        }
+        break;
+      case HloOpcode::kGather:
+      case HloOpcode::kScatter:
+        CHECK(instr->shape().IsArray()) << "Variadic scatter is unsupported.";
+        if (Is64BitIndex(instr, 1)) return true;
+        break;
+      default:
+        break;
+    }
+
     if (Needs64Bits(instr->shape()) ||
         absl::c_any_of(instr->called_computations(), Needs64BitIndices)) {
       return true;
@@ -191,6 +219,7 @@ llvm::SmallVector<Value> MlirFusionEmitterBase::EmitThreadAndBlockIds(
 absl::StatusOr<FusionEmissionResult> MlirFusionEmitterBase::Emit(
     IrEmitterContext& ir_emitter_context,
     const HloFusionInstruction& fusion) const {
+  VLOG(5) << "Fusion: " << fusion.fused_instructions_computation()->ToString();
   TF_ASSIGN_OR_RETURN(
       auto args,
       KernelArguments::Create(ir_emitter_context.buffer_assignment(), &fusion));
@@ -258,6 +287,13 @@ MlirFusionEmitterBase::CreateLLVMModule(
     const BufferAssignment* buffer_assignment) const {
   bool is_amd = std::holds_alternative<se::RocmComputeCapability>(
       device.gpu_compute_capability());
+  auto* hlo_module = fusion.GetModule();
+  std::unique_ptr<mlir::interpreter::MlirCompilationTrace> trace = nullptr;
+  if (DumpingEnabledForHloModule(*hlo_module) &&
+      DumpingEnabledForHloPass("mlir-fusion-emitter",
+                               hlo_module->config().debug_options())) {
+    trace = std::make_unique<mlir::interpreter::MlirCompilationTrace>();
+  }
   TF_RET_CHECK(!is_amd) << "Unsupported device type: " << device.name();
   TF_ASSIGN_OR_RETURN(
       auto module, CreateMLIRModule(mlir_context, fusion, entry_function_name,
@@ -270,7 +306,7 @@ MlirFusionEmitterBase::CreateLLVMModule(
   pm.addPass(mlir::createCSEPass());
   pm.addPass(mlir::mhlo::createConvertToSignlessPass());
   pm.addPass(CreatePropagateSliceIndicesPass());
-  pm.addPass(CreateLowerFuncPass());
+  pm.addNestedPass<mlir::func::FuncOp>(CreateConvertPureCallOpsPass());
   pm.addPass(CreateLowerXlaGpuToScfPass());
   pm.addPass(CreateLowerTensorsPass(
       is_amd, is_amd ? device.rocm_compute_capability().gcn_arch_name()
@@ -282,11 +318,8 @@ MlirFusionEmitterBase::CreateLLVMModule(
   // simplify-affine has maximally folded expressions to work with.
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
+  pm.addNestedPass<mlir::func::FuncOp>(CreateSimplifyArithPass());
   pm.addPass(CreateSimplifyAffinePass());
-  // Replace comparisons that result in constant values (e.g. due to ranges not
-  // overlapping). This pass must run after SimplifyAffinePass, since that
-  // generates the range information.
-  pm.addPass(CreateSimplifyArithPass());
 
   // simplify-affine lowers most affine.apply ops, but if it can't prove a
   // division or modulo is unsigned, affine.apply ops will remain.
@@ -301,15 +334,13 @@ MlirFusionEmitterBase::CreateLLVMModule(
   pm.addPass(CreateLowerToLLVMPass());
   pm.addPass(mlir::createReconcileUnrealizedCastsPass());
 
-  if (pm.run(module.get()).failed()) {
-    std::string module_dump;
-    llvm::raw_string_ostream os(module_dump);
-    module->print(os);
-    return absl::InternalError(absl::StrFormat(
-        "Failed create LLVM module.\nHloFusionInstruction "
-        "computation:\n%s\nMLIR module:\n%s",
-        fusion.fused_instructions_computation()->ToString(), module_dump));
+  auto pipeline_status = RunPassPipeline(module.get(), pm, trace.get());
+  if (trace) {
+    DumpPerModuleProtobufToFile(
+        *hlo_module, *trace, hlo_module->config().debug_options(),
+        absl::StrCat(entry_function_name, ".mlir-trace"));
   }
+  TF_RETURN_IF_ERROR(pipeline_status);
 
   auto llvm_module = mlir::translateModuleToLLVMIR(module.get(), llvm_context);
   TF_RET_CHECK(llvm_module != nullptr)
@@ -322,13 +353,15 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
 MlirFusionEmitterBase::CreateMLIRModule(
     mlir::MLIRContext& context, const HloFusionInstruction& fusion,
     const std::string& entry_function_name,
-    const BufferAssignment* buffer_assignment) const {
+    const BufferAssignment* buffer_assignment,
+    mlir::interpreter::MlirCompilationTrace* trace) const {
   context.loadDialect<mlir::DLTIDialect, mlir::tensor::TensorDialect,
                       mlir::func::FuncDialect, mlir::affine::AffineDialect,
                       mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
                       mlir::math::MathDialect, mlir::scf::SCFDialect,
                       mlir::mhlo::MhloDialect, mlir::gpu::GPUDialect,
-                      mlir::NVVM::NVVMDialect, xla::gpu::XlaGpuDialect>();
+                      mlir::vector::VectorDialect, mlir::NVVM::NVVMDialect,
+                      xla::gpu::XlaGpuDialect>();
   mlir::DialectRegistry registry;
   mlir::func::registerInlinerExtension(registry);
   mlir::registerBuiltinDialectTranslation(registry);
@@ -407,18 +440,13 @@ MlirFusionEmitterBase::CreateMLIRModule(
 
   // Run a minimal simplification pipeline.
   mlir::PassManager pm(&context);
-  pm.addPass(CreateSimplifyArithPass());
+  pm.addNestedPass<mlir::func::FuncOp>(CreateSimplifyArithPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
-  if (pm.run(module.get()).failed()) {
-    std::string module_dump;
-    llvm::raw_string_ostream os(module_dump);
-    module->print(os);
-    return absl::InternalError(absl::StrFormat(
-        "Failed to simplify module.\nHloFusionInstruction "
-        "computation:\n%s\nMLIR module:\n%s",
-        fusion.fused_instructions_computation()->ToString(), module_dump));
-  }
+  // We won't dump the trace here if the pipeline fails. This is acceptable,
+  // since failures this early are usually easy to debug from the single MLIR
+  // snapshot that is dumped in RunPassPipeline.
+  TF_RETURN_IF_ERROR(RunPassPipeline(module.get(), pm, trace));
 
   return module;
 }
@@ -428,39 +456,40 @@ SmallVector<Value> MlirFusionEmitterBase::EmitThreadLoopNest(
     const IndexingMap& indexing_map,
     const std::function<
         SmallVector<Value>(ValueRange outputs_tensors, ValueRange dim_values,
-                           ValueRange symbol_values)>& create_body) const {
+                           ValueRange symbol_values)>& create_body,
+    bool vectorize) const {
   return mlir_converter::EmitLoopNest(b, EmitThreadAndBlockIds(b), outputs,
-                                      indexing_map, create_body);
+                                      indexing_map, create_body, vectorize);
 }
 
 absl::Status MlirFusionEmitterBase::EmitMlir(
     mlir::ModuleOp module, mlir::func::FuncOp entry_function,
     const HloFusionInstruction& fusion) const {
-  std::optional<mlir_converter::EpilogueSpecification> epilogue =
-      GetEpilogue(fusion, module->getContext());
+  std::vector<mlir_converter::EpilogueSpecification> epilogues =
+      GetEpilogues(fusion, module->getContext());
   mlir_converter::PartitionedComputations computations(
-      fusion.fused_instructions_computation(), module->getContext(), epilogue);
+      fusion.fused_instructions_computation(), module->getContext(), epilogues);
   auto subgraph_to_mlir_fn = computations.DeclareFunctions(module);
 
   // Erase subgraphs for all heroes that aren't used anywhere else. This is
   // necessary because the instructions may not have elemental implementations
   // (scatter).
-  if (epilogue) {
-    for (auto* custom : epilogue->heroes) {
+  for (const auto& epilogue : epilogues) {
+    for (auto* custom : epilogue.heroes) {
       if (custom->user_count() == 0) {
         subgraph_to_mlir_fn.extract(&computations.FindSubgraph(custom))
             .mapped()
             .erase();
       }
     }
+  }
 
-    // The epilogue function replaces the root tuple.
-    auto* root = fusion.fused_instructions_computation()->root_instruction();
-    if (root->opcode() == HloOpcode::kTuple) {
-      subgraph_to_mlir_fn.extract(&computations.FindSubgraph(root))
-          .mapped()
-          .erase();
-    }
+  // The epilogue functions replace the root tuple.
+  auto* root = fusion.fused_instructions_computation()->root_instruction();
+  if (root->opcode() == HloOpcode::kTuple && !epilogues.empty()) {
+    subgraph_to_mlir_fn.extract(&computations.FindSubgraph(root))
+        .mapped()
+        .erase();
   }
 
   auto call_targets =
@@ -473,11 +502,12 @@ absl::Status MlirFusionEmitterBase::EmitMlir(
       }
     }
   }
-  if (const auto& epilogue = computations.epilogue()) {
+  for (const auto& epilogue : computations.epilogues()) {
+    if (epilogue.roots.empty()) continue;
     TF_RETURN_IF_ERROR(mlir_converter::SubgraphToMlirFunction(
         computations.FindPartitionedComputation(
             fusion.fused_instructions_computation()),
-        *epilogue, subgraph_to_mlir_fn[&*epilogue], call_targets));
+        epilogue, subgraph_to_mlir_fn[&epilogue], call_targets));
   }
 
   int index_bitwidth =
@@ -492,25 +522,64 @@ absl::Status MlirFusionEmitterBase::EmitMlir(
   return EmitEntryFunction(computations, call_targets, entry_function, fusion);
 }
 
-mlir::ValueRange MlirFusionEmitterBase::EmitEpilogue(
+absl::flat_hash_map<const HloInstruction*, ValueRange>
+MlirFusionEmitterBase::EmitEpilogue(
+    int epilogue_index,
     const mlir_converter::PartitionedComputations& computations,
-    mlir::func::FuncOp entry_fn, mlir::ValueRange hero_values,
-    mlir::ValueRange output_indices,
-    mlir::ImplicitLocOpBuilder& builder) const {
-  const auto& epilogue = computations.epilogue();
-  if (!epilogue) {
-    return hero_values;
+    mlir::func::FuncOp entry_fn,
+    const absl::flat_hash_map<const HloInstruction*, llvm::SmallVector<Value>>&
+        injected,
+    ValueRange output_indices, mlir::ImplicitLocOpBuilder& builder) const {
+  const auto& epilogue = computations.epilogues().at(epilogue_index);
+  if (epilogue.roots.empty()) {
+    return {};
+  }
+  auto epilogue_fn = mlir::cast<mlir::func::FuncOp>(
+      entry_fn->getParentOfType<mlir::ModuleOp>().lookupSymbol(epilogue.name));
+  SmallVector<Value> operands = ValueRange(entry_fn.getArguments().take_front(
+      computations.fusion()->num_parameters()));
+  absl::c_copy(output_indices, std::back_inserter(operands));
+  int injected_offset = operands.size();
+  operands.resize(injected_offset + epilogue.num_injected_values);
+  for (auto [injected_instruction, start] : epilogue.injected_value_starts) {
+    absl::c_copy(injected.at(injected_instruction),
+                 operands.begin() + injected_offset + start);
   }
 
-  auto epilogue_fn = mlir::cast<mlir::func::FuncOp>(
-      entry_fn->getParentOfType<mlir::ModuleOp>().lookupSymbol(epilogue->name));
-  SmallVector<Value> operands =
-      mlir::ValueRange(entry_fn.getArguments().take_front(
-          computations.fusion()->num_parameters()));
-  absl::c_copy(output_indices, std::back_inserter(operands));
-  absl::c_copy(hero_values, std::back_inserter(operands));
+  ValueRange results =
+      builder.create<PureCallOp>(epilogue_fn, operands).getResults();
+  absl::flat_hash_map<const HloInstruction*, ValueRange> results_per_root;
+  for (auto* root : epilogue.roots) {
+    int arity =
+        root->shape().IsTuple() ? root->shape().tuple_shapes().size() : 1;
+    results_per_root[root] = results.take_front(arity);
+    results = results.drop_front(arity);
+  }
+  CHECK_EQ(results.size(), 0);
+  return results_per_root;
+}
 
-  return builder.create<PureCallOp>(epilogue_fn, operands).getResults();
+absl::Status MlirFusionEmitterBase::RunPassPipeline(
+    mlir::ModuleOp module, mlir::PassManager& pm,
+    mlir::interpreter::MlirCompilationTrace* trace) const {
+  if (VLOG_IS_ON(5)) {
+    module.getContext()->disableMultithreading();
+    pm.enableIRPrinting();
+  }
+  if (trace) {
+    module.getContext()->disableMultithreading();
+    pm.addInstrumentation(
+        std::make_unique<mlir::interpreter::MlirCompilerTraceInstrumentation>(
+            *trace));
+  }
+  if (pm.run(module).failed()) {
+    std::string module_dump;
+    llvm::raw_string_ostream os(module_dump);
+    module->print(os);
+    return absl::InternalError(absl::StrFormat(
+        "Failed to run pass pipeline.\nMLIR module:\n%s", module_dump));
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace gpu

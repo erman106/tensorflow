@@ -28,6 +28,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/base/casts.h"
+#include "absl/hash/hash.h"
 #include "absl/random/random.h"
 #include "absl/strings/match.h"
 #include "absl/types/span.h"
@@ -931,6 +932,16 @@ TEST_F(LiteralUtilTest, TestR4RelayoutEquivalence) {
   EXPECT_EQ(literal_r4_2x2x3x3_dim0minor_, dim0major_relaid_to_dim0minor);
 }
 
+template <bool kIsLayoutSensitive>
+struct HashTester {
+  template <typename H>
+  friend H AbslHashValue(H h, const HashTester& key) {
+    return Literal::Hash<H, kIsLayoutSensitive, /*kByteLimit=*/64>(
+        std::move(h), *key.literal);
+  }
+  const Literal* literal;
+};
+
 TEST_F(LiteralUtilTest, TestR2LinearLayout) {
   // Test expected memory layout of R2 dim0-minor (column-major) literal.
   auto mat_dim0minor = LiteralUtil::CreateR2WithLayout<int32_t>(
@@ -942,6 +953,8 @@ TEST_F(LiteralUtilTest, TestR2LinearLayout) {
   auto relaid_mat_to_dim0major = mat_dim0minor.Relayout(layout_r2_dim0major_);
   EXPECT_THAT(relaid_mat_to_dim0major.data<int32_t>(),
               ElementsAre(1, 2, 3, 4, 5, 6));
+  EXPECT_EQ(absl::HashOf(HashTester<false>{&mat_dim0minor}),
+            absl::HashOf(HashTester<false>{&relaid_mat_to_dim0major}));
 
   // Test expected memory layout of R2 created with dim0-major (row-major).
   auto mat_dim0major = LiteralUtil::CreateR2WithLayout<int32_t>(
@@ -953,6 +966,14 @@ TEST_F(LiteralUtilTest, TestR2LinearLayout) {
   auto relaid_mat_to_dim0minor = mat_dim0major.Relayout(layout_r2_dim0minor_);
   EXPECT_THAT(relaid_mat_to_dim0minor.data<int32_t>(),
               ElementsAre(1, 4, 2, 5, 3, 6));
+  EXPECT_EQ(absl::HashOf(HashTester<false>{&mat_dim0major}),
+            absl::HashOf(HashTester<false>{&relaid_mat_to_dim0minor}));
+
+  // Test that layout sensitive hashes are equal.
+  EXPECT_EQ(absl::HashOf(HashTester<true>{&mat_dim0minor}),
+            absl::HashOf(HashTester<true>{&relaid_mat_to_dim0minor}));
+  EXPECT_EQ(absl::HashOf(HashTester<true>{&mat_dim0major}),
+            absl::HashOf(HashTester<true>{&relaid_mat_to_dim0major}));
 }
 
 TEST_F(LiteralUtilTest, TestR3LinearLayout) {
@@ -1389,7 +1410,7 @@ TEST_F(LiteralUtilTest, CopyBetweenSameTuple) {
 TEST_F(LiteralUtilTest, CopyFromDifferentShapes) {
   auto matrix = LiteralUtil::CreateR2<float>({{1.0, 2.0}, {3.0, 4.0}});
   auto vector = LiteralUtil::CreateR1<float>({5.0, 7.0});
-  Status status = matrix.CopyFrom(vector);
+  absl::Status status = matrix.CopyFrom(vector);
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(), HasSubstr("Destination subshape incompatible"));
 }
@@ -1798,7 +1819,7 @@ TEST_F(LiteralUtilTest, BitcastConvert) {
 
 TEST_F(LiteralUtilTest, BitcastConvertBetweenInvalidTypes) {
   Literal literal = LiteralUtil::CreateR0<uint32_t>(1234);
-  Status status =
+  absl::Status status =
       literal.BitcastConvert(ShapeUtil::ChangeElementType(literal.shape(), F64))
           .status();
   EXPECT_NE(OkStatus(), status);
@@ -2266,7 +2287,7 @@ TEST_F(LiteralUtilTest, InvalidProtoNoValues) {
   // Proto contains a shape, but no values.
   LiteralProto proto;
   *proto.mutable_shape() = ShapeUtil::MakeShape(F32, {3}).ToProto();
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(),
               HasSubstr("Expected 3 elements in LiteralProto"));
@@ -2276,7 +2297,7 @@ TEST_F(LiteralUtilTest, ValidProtoNoValues) {
   // Proto contains a shape, but no values.
   LiteralProto proto;
   *proto.mutable_shape() = ShapeUtil::MakeShape(F32, {3}).ToProto();
-  Status status =
+  absl::Status status =
       Literal::CreateFromProto(proto, /*prohibit_empty_literal=*/false)
           .status();
   EXPECT_TRUE(status.ok());
@@ -2290,7 +2311,7 @@ TEST_F(LiteralUtilTest, ValidProtoWithClearedValues) {
   // Clear values.
   proto.clear_preds();
   EXPECT_EQ(proto.preds_size(), 0);
-  Status status =
+  absl::Status status =
       Literal::CreateFromProto(proto, /*prohibit_empty_literal=*/false)
           .status();
   EXPECT_TRUE(status.ok());
@@ -2302,7 +2323,7 @@ TEST_F(LiteralUtilTest, InvalidProtoNoShape) {
   proto.add_preds(false);
   proto.add_preds(true);
   proto.add_preds(false);
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(), HasSubstr("LiteralProto has no shape"));
 }
@@ -2314,7 +2335,7 @@ TEST_F(LiteralUtilTest, InvalidProtoWrongContainer) {
   proto.add_preds(false);
   proto.add_preds(true);
   proto.add_preds(false);
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(),
               HasSubstr("Expected 3 elements in LiteralProto"));
@@ -2327,7 +2348,7 @@ TEST_F(LiteralUtilTest, InvalidProtoTooFewValues) {
   proto.add_f32s(1.0);
   proto.add_f32s(2.0);
   proto.add_f32s(3.0);
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(),
               HasSubstr("Expected 84 elements in LiteralProto"));
@@ -2340,7 +2361,7 @@ TEST_F(LiteralUtilTest, InvalidProtoTooManyValues) {
   proto.add_s32s(42);
   proto.add_s32s(-10);
   proto.add_s32s(100);
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(),
               HasSubstr("Expected 2 elements in LiteralProto"));
@@ -2355,7 +2376,7 @@ TEST_F(LiteralUtilTest, InvalidProtoMissingLayout) {
   proto.add_preds(false);
   proto.add_preds(true);
   proto.add_preds(false);
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(), HasSubstr("LiteralProto has no layout"));
 }
@@ -2373,7 +2394,7 @@ TEST_F(LiteralUtilTest, InvalidProtoTooFewTupleElements) {
   element0->add_preds(false);
   element0->add_preds(true);
 
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(), HasSubstr("Expected 2 tuple elements"));
 }
@@ -2398,7 +2419,7 @@ TEST_F(LiteralUtilTest, InvalidProtoTooManyTupleElements) {
   *element2->mutable_shape() = ShapeUtil::MakeShape(F32, {}).ToProto();
   element2->add_f32s(123.0);
 
-  Status status = Literal::CreateFromProto(proto).status();
+  absl::Status status = Literal::CreateFromProto(proto).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.message(), HasSubstr("Expected 2 tuple elements"));
 }

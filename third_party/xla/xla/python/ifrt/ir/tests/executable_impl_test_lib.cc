@@ -28,6 +28,7 @@ limitations under the License.
 #include "xla/python/ifrt/device.h"
 #include "xla/python/ifrt/dtype.h"
 #include "xla/python/ifrt/executable.h"
+#include "xla/python/ifrt/hlo/hlo_program.h"
 #include "xla/python/ifrt/ir/compiler.h"
 #include "xla/python/ifrt/ir/sharding_param.h"
 #include "xla/python/ifrt/ir/tests/executable_impl_test_base.h"
@@ -35,7 +36,7 @@ limitations under the License.
 #include "xla/python/ifrt/test_util.h"
 #include "xla/python/pjrt_ifrt/xla_compiler.h"
 #include "xla/service/computation_placer.h"
-#include "tsl/concurrency/ref_count.h"
+#include "xla/tsl/concurrency/ref_count.h"
 #include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/status_matchers.h"
 #include "tsl/platform/statusor.h"
@@ -304,7 +305,7 @@ module {
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<LoadedExecutable> child_exec,
       client_->GetDefaultCompiler()->Compile(
-          std::make_unique<xla::ifrt::XlaProgram>(*mhlo_module),
+          std::make_unique<xla::ifrt::HloProgram>(*mhlo_module),
           std::make_unique<XlaCompileOptions>(std::move(xla_options))));
 
   std::string source = R"(

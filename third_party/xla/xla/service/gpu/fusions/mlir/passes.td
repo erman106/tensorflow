@@ -34,20 +34,19 @@ def PropagateSliceIndicesPass :
   let constructor = "CreatePropagateSliceIndicesPass()";
 }
 
-def LowerFuncPass : Pass<"xla-gpu-lower-func", "mlir::ModuleOp"> {
-  let summary = "Lowers function calls to func.calls.";
-
+def ConvertPureCallOpsPass
+    : Pass<"xla-gpu-convert-pure-call-ops", "mlir::func::FuncOp"> {
+  let summary = "Converts xla_gpu.pure_call to func.call";
   let description = [{
       We use xla_gpu.pure_call ops for calls to enable CSE and other
       transformations (e.g. LICM). This pass rewrites our custom ops to standard
       ops.
   }];
-
   let dependentDialects = [
-    "mlir::func::FuncDialect", "xla::gpu::XlaGpuDialect"
+    "mlir::func::FuncDialect",
+    "xla::gpu::XlaGpuDialect"
   ];
-
-  let constructor = "CreateLowerFuncPass()";
+  let constructor = "CreateConvertPureCallOpsPass()";
 }
 
 def LowerTensorsPass : Pass<"xla-gpu-lower-tensors", "mlir::ModuleOp"> {
@@ -64,6 +63,7 @@ def LowerTensorsPass : Pass<"xla-gpu-lower-tensors", "mlir::ModuleOp"> {
     "mlir::gpu::GPUDialect",
     "mlir::scf::SCFDialect",
     "mlir::tensor::TensorDialect",
+    "xla::gpu::XlaGpuDialect",
   ];
   let options = [
     Option<"is_amd_gpu_", "is_amd_gpu", "bool", /*default=*/"false",
@@ -90,7 +90,7 @@ def MergePointersToSameSlicePass :
   let constructor = "CreateMergePointersToSameSlicePass()";
 }
 
-def SimplifyArithPass : Pass<"xla-gpu-simplify-arith", "mlir::ModuleOp"> {
+def SimplifyArithPass : Pass<"xla-gpu-simplify-arith", "mlir::func::FuncOp"> {
   let summary = "Simplifies arith using XLA's range-aware simplifier.";
 
   let description = [{
@@ -99,7 +99,8 @@ def SimplifyArithPass : Pass<"xla-gpu-simplify-arith", "mlir::ModuleOp"> {
   }];
 
   let dependentDialects = [
-    "mlir::arith::ArithDialect"
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
   ];
 
   let constructor = "CreateSimplifyArithPass()";

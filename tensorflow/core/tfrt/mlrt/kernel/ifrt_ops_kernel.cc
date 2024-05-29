@@ -49,6 +49,8 @@ limitations under the License.
 #include "tensorflow/core/tfrt/mlrt/kernel/kernel.h"
 #include "tensorflow/core/tfrt/mlrt/kernel/kernel_runner_utils.h"
 #include "tensorflow/core/tfrt/utils/fallback_tensor.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 #include "tsl/platform/tstring.h"
 #include "tfrt/host_context/concurrent_work_queue.h"  // from @tf_runtime
 
@@ -94,16 +96,26 @@ struct MlrtIfrtRestoreVariableKernel : mlrt::KernelFrame {
 
   Context& context() { return execution_context().GetUserContext<Context>(); }
   void Invoke();
+
+ private:
+  absl::Status InvokeHelper();
 };
 
 void MlrtIfrtRestoreVariableKernel::Invoke() {
+  absl::Status status = InvokeHelper();
+  if (!status.ok()) {
+    execution_context().Fail(std::move(status));
+    return;
+  }
+}
+
+absl::Status MlrtIfrtRestoreVariableKernel::InvokeHelper() {
   std::optional<IfrtModelContext*> ifrt_model_context =
       context().resource_context().GetResource<IfrtModelContext>(
           "IfrtModelContext");
   if (!ifrt_model_context.has_value()) {
-    execution_context().Fail(absl::FailedPreconditionError(
-        "RestoreVariableOp: failed to fetch IfrtModelContext"));
-    return;
+    return absl::FailedPreconditionError(
+        "RestoreVariableOp: failed to fetch IfrtModelContext");
   }
   const int num_outputs = var_handles().size();
   DCHECK_EQ(num_outputs, tensor_names().tensor().NumElements());
@@ -142,6 +154,8 @@ void MlrtIfrtRestoreVariableKernel::Invoke() {
 
   auto& params = context().params();
   SetUpParams(runner, input_tf_tensor_values, params);
+  // Use persistent device instead of the per request device.
+  params.device = context().fallback_request_state().device_manager().HostCPU();
 
   struct AsyncState {
     explicit AsyncState(
@@ -152,7 +166,7 @@ void MlrtIfrtRestoreVariableKernel::Invoke() {
 
     tfrt_stub::OpKernelRunState run_state;
     OpKernelContext context;
-    std::vector<xla::ifrt::Promise<absl::StatusOr<tensorflow::Tensor>>> results;
+    std::vector<xla::ifrt::Promise<tensorflow::Tensor>> results;
   };
   auto async_state =
       std::make_unique<AsyncState>(input_tf_tensor_values, params, num_outputs);
@@ -162,24 +176,19 @@ void MlrtIfrtRestoreVariableKernel::Invoke() {
   ifrt_serving::IfrtRestoreTensorRegistry& ifrt_restore_tensor_registry =
       (*ifrt_model_context)->GetRestoreTensorRegistry();
   for (int i = 0; i < num_outputs; ++i) {
-    auto promise =
-        xla::ifrt::Future<absl::StatusOr<tensorflow::Tensor>>::CreatePromise();
-    auto future =
-        xla::ifrt::Future<absl::StatusOr<tensorflow::Tensor>>(promise);
+    auto promise = xla::ifrt::Future<tensorflow::Tensor>::CreatePromise();
+    auto future = xla::ifrt::Future<tensorflow::Tensor>(promise);
     const ResourceHandle& var_handle =
         var_handles()[i].tensor().scalar<ResourceHandle>()();
-    absl::StatusOr<ifrt_serving::DtypeAndShape> dtype_and_shape =
-        ifrt_serving::GetDtypeAndShape(var_handle);
-    if (!dtype_and_shape.ok()) {
-      // TODO(b/330360798) Refactor Invoke() to have less usage on
-      // execution_context().Fail.
-      execution_context().Fail(dtype_and_shape.status());
-      return;
-    }
+
+    TF_ASSIGN_OR_RETURN(ifrt_serving::DtypeAndShape dtype_and_shape,
+                        ifrt_serving::GetDtypeAndShape(var_handle));
+
     std::string runtime_name =
         ifrt_serving::GetRuntimeNameFromVarHandle(var_handle);
     ifrt_serving::IfrtRestoreTensorRegistry::RestoredTensorInfo
-        restored_tensor_info = {*std::move(dtype_and_shape), std::move(future)};
+        restored_tensor_info = {false, std::move(dtype_and_shape),
+                                std::move(future)};
     if (auto status = ifrt_restore_tensor_registry.TryRegister(
             runtime_name, restored_tensor_info);
         !status.ok()) {
@@ -187,9 +196,8 @@ void MlrtIfrtRestoreVariableKernel::Invoke() {
       // on, they can be unblocked.
       for (auto& result : async_state->results) {
         std::move(result).Set(status);
-      }
-      execution_context().Fail(std::move(status));
-      return;
+      };
+      return status;
     }
     async_state->results.push_back(std::move(promise));
   }
@@ -216,6 +224,7 @@ void MlrtIfrtRestoreVariableKernel::Invoke() {
                   .Set(std::move(*op_kernel_context.mutable_output(i)));
             }
           });
+  return absl::OkStatus();
 }
 
 class MlrtIfrtLoadVariableKernel : public mlrt::KernelFrame {
@@ -232,9 +241,9 @@ class MlrtIfrtLoadVariableKernel : public mlrt::KernelFrame {
     return ret;
   }
 
-  absl::string_view sharding_config_proto_text() const {
-    DCHECK_EQ(attributes().size(), 2);
-    return attributes().GetAs<mlrt::bc::String>(0).Get();
+  bool used_by_host() const {
+    DCHECK_EQ(attributes().size(), 1);
+    return attributes().GetAs<bool>(0);
   }
 
   Context& context() { return execution_context().GetUserContext<Context>(); }
@@ -271,20 +280,31 @@ absl::Status MlrtIfrtLoadVariableKernel::InvokeHelper() {
   std::string runtime_name = ifrt_serving::GetRuntimeNameFromVarHandle(
       variable_handler_tensor().scalar<ResourceHandle>()());
 
-  xla::ifrt::Future<absl::StatusOr<tensorflow::Tensor>> restored_tensor_future =
-      ifrt_restore_tensor_registry.GetRestoredTensor(runtime_name);
+  if (used_by_host()) {
+    TF_RETURN_IF_ERROR(
+        ifrt_restore_tensor_registry.SetUsedByHost(runtime_name));
 
-  restored_tensor_future.OnReady(
-      [tensor_promise = std::move(tensor_promise)](
-          absl::StatusOr<tensorflow::Tensor> restored_tensor) mutable {
-        if (!restored_tensor.ok()) {
-          std::move(tensor_promise).SetError(restored_tensor.status());
-          return;
-        }
-        std::move(tensor_promise)
-            .Set<tensorflow::tfrt_stub::FallbackTensor>(
-                tensorflow::tfrt_stub::FallbackTensor(*restored_tensor));
-      });
+    xla::ifrt::Future<tensorflow::Tensor> restored_tensor_future =
+        ifrt_restore_tensor_registry.GetRestoredTensor(runtime_name);
+
+    restored_tensor_future.OnReady(
+        [tensor_promise = std::move(tensor_promise)](
+            absl::StatusOr<tensorflow::Tensor> restored_tensor) mutable {
+          if (!restored_tensor.ok()) {
+            std::move(tensor_promise).SetError(restored_tensor.status());
+            return;
+          }
+          std::move(tensor_promise)
+              .Set<tensorflow::tfrt_stub::FallbackTensor>(
+                  tensorflow::tfrt_stub::FallbackTensor(*restored_tensor));
+        });
+  } else {
+    // If not used by host, set the future to be ready immediately with an empty
+    // tensor so that it does not block the graph execution.
+    std::move(tensor_promise)
+        .Set<tensorflow::tfrt_stub::FallbackTensor>(
+            tensorflow::tfrt_stub::FallbackTensor());
+  }
   // Return the name as the key
   tensorflow::Tensor key_tensor(tensorflow::DT_STRING, {});
   key_tensor.scalar<tsl::tstring>()() = runtime_name;

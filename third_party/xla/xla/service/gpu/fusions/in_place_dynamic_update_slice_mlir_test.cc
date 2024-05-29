@@ -100,8 +100,8 @@ TEST_F(MlirInPlaceDynamicUpdateSliceFusionTest, SimpleDUS) {
     }
   )";
   TF_ASSERT_OK(EmitAndCheckIR(kHloString, R"(
-    // CHECK-DAG: #[[MAP_1:.*]] = affine_map<()[s0] -> (s0 floordiv 6)>
-    // CHECK-DAG: #[[MAP_2:.*]] = affine_map<()[s0] -> (s0 mod 6)>
+    // CHECK-DAG: #[[MAP_1:.*]] = affine_map<(d0) -> (d0 floordiv 6)>
+    // CHECK-DAG: #[[MAP_2:.*]] = affine_map<(d0) -> (d0 mod 6)>
     // CHECK:     func.func @fused_computation
     // CHECK-SAME:  %arg0: tensor<20x30xf32>
     // CHECK-SAME:  %arg1: tensor<5x6xf32>
@@ -112,8 +112,8 @@ TEST_F(MlirInPlaceDynamicUpdateSliceFusionTest, SimpleDUS) {
     // CHECK-DAG:   %[[C_15:.*]] = arith.constant 15
     // CHECK-DAG:   %[[C_0:.*]] = arith.constant 0
     // CHECK:       %[[THREAD_ID:.*]] = gpu.thread_id  x
-    // CHECK:       %[[INPUT_INDEX_0:.*]] = affine.apply #[[MAP_1]]()[%[[THREAD_ID]]]
-    // CHECK:       %[[INPUT_INDEX_1:.*]] = affine.apply #[[MAP_2]]()[%[[THREAD_ID]]]
+    // CHECK:       %[[INPUT_INDEX_0:.*]] = xla_gpu.apply_indexing #[[MAP_1]](%[[THREAD_ID]] in [0, 29])
+    // CHECK:       %[[INPUT_INDEX_1:.*]] = xla_gpu.apply_indexing #[[MAP_2]](%[[THREAD_ID]] in [0, 29])
     // CHECK:       %[[I0:.*]] = xla_gpu.pure_call @fused_computation_i0
     // CHECK:       %[[I1:.*]] = xla_gpu.pure_call @fused_computation_i1
     // CHECK:       %[[IDX0:.*]] = arith.index_cast %[[I0]]
@@ -151,8 +151,8 @@ TEST_F(MlirInPlaceDynamicUpdateSliceFusionTest, OutOfBoundDUS) {
     }
   )";
   TF_ASSERT_OK(EmitAndCheckIR(kHloString, R"(
-    // CHECK-DAG: #[[MAP_1:.*]] = affine_map<()[s0] -> (s0 floordiv 3)>
-    // CHECK-DAG: #[[MAP_2:.*]] = affine_map<()[s0] -> (s0 mod 3)>
+    // CHECK-DAG: #[[MAP_1:.*]] = affine_map<(d0) -> (d0 floordiv 3)>
+    // CHECK-DAG: #[[MAP_2:.*]] = affine_map<(d0) -> (d0 mod 3)>
     // CHECK:     func.func @fused_computation
     // CHECK-SAME:  %arg0: tensor<7x8xf32>
     // CHECK-SAME:  %arg1: tensor<2x3xf32>
@@ -162,8 +162,8 @@ TEST_F(MlirInPlaceDynamicUpdateSliceFusionTest, OutOfBoundDUS) {
     // CHECK-DAG:   %[[C_5:.*]] = arith.constant 5
     // CHECK-DAG:   %[[C_0:.*]] = arith.constant 0
     // CHECK:       %[[THREAD_ID:.*]] = gpu.thread_id  x
-    // CHECK:       %[[INPUT_INDEX_0:.*]] = affine.apply #[[MAP_1]]()[%[[THREAD_ID]]]
-    // CHECK:       %[[INPUT_INDEX_1:.*]] = affine.apply #[[MAP_2]]()[%[[THREAD_ID]]]
+    // CHECK:       %[[INPUT_INDEX_0:.*]] = xla_gpu.apply_indexing #[[MAP_1]](%[[THREAD_ID]] in [0, 5])
+    // CHECK:       %[[INPUT_INDEX_1:.*]] = xla_gpu.apply_indexing #[[MAP_2]](%[[THREAD_ID]] in [0, 5])
     // CHECK:       %[[I0:.*]] = xla_gpu.pure_call @fused_computation_i0
     // CHECK:       %[[I1:.*]] = xla_gpu.pure_call @fused_computation_i1
     // CHECK:       %[[IDX0:.*]] = arith.index_cast %[[I0]]
@@ -199,6 +199,37 @@ TEST_F(MlirInPlaceDynamicUpdateSliceFusionTest, BitcastDus) {
       i0 = s32[] constant(2)
       i1 = s32[] constant(3)
       ROOT fusion = f32[600] fusion(in, updates, i0, i1), kind=kLoop, calls=fused_computation
+    }
+  )";
+  EXPECT_TRUE(RunAndCompareNoHloPasses(kHloString, ErrorSpec{1e-3}));
+}
+
+TEST_F(MlirInPlaceDynamicUpdateSliceFusionTest, MOFDus) {
+  auto kHloString = R"(
+    HloModule module
+
+    fused_computation {
+      p0 = f32[10,11,12] parameter(0)
+      p1 = f32[1,11,12] parameter(1)
+      p2 = f32[8,11,12] parameter(2)
+      p3 = f32[1,11,12] parameter(3)
+      p4 = s32[] parameter(4)
+      c0 = s32[] constant(0)
+      cmp = pred[] compare(p4, c0), direction=EQ
+      broadcast = pred[1,11,12] broadcast(cmp), dimensions={}
+      select = f32[1,11,12] select(broadcast, p1, p3)
+      dus0 = f32[10,11,12] dynamic-update-slice(p0, select, c0, c0, c0)
+      dus1 = f32[8,11,12] dynamic-update-slice(p2, select, c0, c0, c0)
+      ROOT tuple = (f32[10,11,12], f32[8,11,12]) tuple(dus0, dus1)
+    }
+    ENTRY entry {
+      p0 = f32[10,11,12] parameter(0)
+      p1 = f32[1,11,12] parameter(1)
+      p2 = f32[8,11,12] parameter(2)
+      p3 = f32[1,11,12] parameter(3)
+      p4 = s32[] parameter(4)
+      ROOT fusion_root_multiple = (f32[10,11,12], f32[8,11,12])
+        fusion(p0, p1, p2, p3, p4), kind=kLoop, calls=fused_computation
     }
   )";
   EXPECT_TRUE(RunAndCompareNoHloPasses(kHloString, ErrorSpec{1e-3}));

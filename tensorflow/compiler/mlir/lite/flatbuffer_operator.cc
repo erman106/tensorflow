@@ -42,9 +42,12 @@ limitations under the License.
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
 #include "stablehlo/dialect/VhloOps.h"  // from @stablehlo
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
+#include "tensorflow/compiler/mlir/lite/schema/mutable/schema_generated.h"
+#include "tensorflow/compiler/mlir/lite/schema/schema_utils.h"
 #include "tensorflow/compiler/mlir/lite/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dynamic_shape_utils.h"
@@ -53,8 +56,6 @@ limitations under the License.
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/lite/core/c/builtin_op_data.h"
 #include "tensorflow/lite/kernels/internal/kernel_utils.h"
-#include "tensorflow/lite/schema/mutable/schema_generated.h"
-#include "tensorflow/lite/schema/schema_utils.h"
 #include "tsl/platform/status.h"
 
 namespace {
@@ -177,7 +178,7 @@ ConvertI64ArrayAttrForOptionWriter(mlir::ArrayAttr attrArray,
   std::vector<int32_t> intVec;
   intVec.reserve(attrArray.getValue().size());
   for (auto attr : attrArray.getValue()) {
-    intVec.push_back(attr.cast<mlir::IntegerAttr>().getInt());
+    intVec.push_back(mlir::cast<mlir::IntegerAttr>(attr).getInt());
   }
   return builder->CreateVector(intVec);
 }
@@ -189,7 +190,7 @@ ConvertF32ArrayAttrForOptionWriter(mlir::ArrayAttr attrArray,
   floatVec.reserve(attrArray.getValue().size());
   for (auto attr : attrArray.getValue()) {
     floatVec.push_back(
-        attr.cast<mlir::FloatAttr>().getValue().convertToFloat());
+        mlir::cast<mlir::FloatAttr>(attr).getValue().convertToFloat());
   }
   return builder->CreateVector(floatVec);
 }
@@ -308,11 +309,13 @@ static mlir::Attribute BuildVhloDictionaryV1Attr(
   return mlir::vhlo::DictionaryV1Attr::get(builder.getContext(), value);
 }
 
-static mlir::Attribute BuildVhloFloatV1Attr(::llvm::APFloat value,
-                                            mlir::Type type,
+static mlir::Attribute BuildVhloFloatV1Attr(float value,
                                             mlir::Builder builder) {
-  return mlir::vhlo::FloatV1Attr::get(builder.getContext(), type,
-                                      std::move(value));
+  mlir::StablehloVhloTypeConverter type_converter;
+  auto vhlo_type =
+      type_converter.convertType(builder.getF32FloatAttr(value).getType());
+  return mlir::vhlo::FloatV1Attr::get(builder.getContext(), vhlo_type,
+                                      ::llvm::APFloat(value));
 }
 
 static mlir::Attribute BuildRankedTensorAttr(std::vector<int64_t> shape,
@@ -341,8 +344,8 @@ static mlir::Attribute BuildVhloTensorV1Attr(std::vector<int64_t> shape,
                                              std::vector<int64_t> value,
                                              mlir::Builder builder) {
   mlir::StablehloVhloTypeConverter type_converter;
-  auto builtin_attr = BuildRankedTensorAttr(shape, value, builder)
-                          .dyn_cast<mlir::DenseIntElementsAttr>();
+  auto builtin_attr = mlir::dyn_cast<mlir::DenseIntElementsAttr>(
+      BuildRankedTensorAttr(shape, value, builder));
   auto vhlo_type = type_converter.convertType(builtin_attr.getType());
   return mlir::vhlo::TensorV1Attr::get(builder.getContext(), vhlo_type,
                                        builtin_attr.getRawData());
@@ -352,8 +355,8 @@ static mlir::Attribute BuildVhloTensorV1Attr(std::vector<int64_t> shape,
                                              std::vector<bool> value,
                                              mlir::Builder builder) {
   mlir::StablehloVhloTypeConverter type_converter;
-  auto builtin_attr = BuildRankedTensorAttr(shape, value, builder)
-                          .dyn_cast<mlir::DenseIntElementsAttr>();
+  auto builtin_attr = mlir::dyn_cast<mlir::DenseIntElementsAttr>(
+      BuildRankedTensorAttr(shape, value, builder));
   auto vhlo_type = type_converter.convertType(builtin_attr.getType());
   return mlir::vhlo::TensorV1Attr::get(builder.getContext(), vhlo_type,
                                        builtin_attr.getRawData());
@@ -445,8 +448,7 @@ static std::vector<mlir::Attribute> BuildAttributeVectorFromFlatbuffer(
     } else if (value.IsInt()) {
       mlir_vector.push_back(BuildVhloIntV1Attr(value.AsInt64(), builder));
     } else if (value.IsFloat()) {
-      mlir_vector.push_back(BuildVhloFloatV1Attr(llvm::APFloat(value.AsFloat()),
-                                                 mlir::Float32Type(), builder));
+      mlir_vector.push_back(BuildVhloFloatV1Attr(value.AsFloat(), builder));
     } else if (value.IsVector()) {
       std::vector<mlir::Attribute> nested_mlir_vector =
           BuildAttributeVectorFromFlatbuffer(value.AsVector(), builder);
@@ -712,8 +714,8 @@ void BuiltinOptions2ToAttributesManual(
             BuildVhloIntV1Attr(value.AsInt64(), builder);
       }
       if (value.IsFloat()) {
-        composite_attribute_pair.second = BuildVhloFloatV1Attr(
-            llvm::APFloat(value.AsFloat()), mlir::Float32Type(), builder);
+        composite_attribute_pair.second =
+            BuildVhloFloatV1Attr(value.AsFloat(), builder);
       }
 
       if (value.IsVector()) {

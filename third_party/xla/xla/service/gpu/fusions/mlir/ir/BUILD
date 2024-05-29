@@ -57,7 +57,9 @@ cc_library(
     hdrs = ["xla_gpu_ops.h"],
     deps = [
         ":xla_gpu_ops_inc_gen",
+        "//xla/service/gpu/model:indexing_analysis",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:FuncDialect",

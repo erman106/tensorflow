@@ -55,8 +55,8 @@
 #include "xla/python/ifrt_proxy/common/types.h"
 #include "xla/python/pjrt_ifrt/pjrt_host_callback.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/concurrency/ref_count.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/concurrency/ref_count.h"
 #include "tsl/platform/cpu_info.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
@@ -212,9 +212,8 @@ LoadedExecutable::LoadedExecutable(
   // eagerly schedule this fetch since, in some implementations, it may take a
   // long time for sharding information to be available.
 
-  auto promise =
-      Future<absl::StatusOr<std::shared_ptr<Metadata>>>::CreatePromise();
-  metadata_future_ = Future<absl::StatusOr<std::shared_ptr<Metadata>>>(promise);
+  auto promise = Future<std::shared_ptr<Metadata>>::CreatePromise();
+  metadata_future_ = Future<std::shared_ptr<Metadata>>(promise);
 
   auto req = std::make_unique<LoadedExecutableMetadataRequest>();
   req->set_loaded_executable_handle(handle_);

@@ -175,13 +175,13 @@ Status GetXlaInputShapes(
 // bounded type by using the bounds as dimension sizes. Returns null if is
 // neither.
 mlir::RankedTensorType GetBufferType(mlir::Type ty) {
-  auto ranked_ty = ty.dyn_cast_or_null<mlir::RankedTensorType>();
+  auto ranked_ty = mlir::dyn_cast_or_null<mlir::RankedTensorType>(ty);
   if (!ranked_ty) return {};
 
   int64_t rank = ranked_ty.getRank();
   llvm::SmallVector<int64_t, 4> dims = llvm::to_vector<4>(ranked_ty.getShape());
-  auto encoding = ranked_ty.getEncoding()
-                      .dyn_cast_or_null<mlir::mhlo::TypeExtensionsAttr>();
+  auto encoding = mlir::dyn_cast_or_null<mlir::mhlo::TypeExtensionsAttr>(
+      ranked_ty.getEncoding());
   if (encoding && !encoding.getBounds().empty()) {
     for (int64_t dim = 0; dim < rank; ++dim) {
       if (dims[dim] == mlir::ShapedType::kDynamic) {
@@ -234,7 +234,7 @@ Status GetOutputInfo(
   auto return_op = main_func.begin()->getTerminator();
   for (const auto& type_and_idx : llvm::enumerate(func_type.getResults())) {
     size_t idx = type_and_idx.index();
-    auto result_ty = type_and_idx.value().cast<mlir::RankedTensorType>();
+    auto result_ty = mlir::cast<mlir::RankedTensorType>(type_and_idx.value());
 
     // If the result type isn't static, then the owner of the result may be a
     // cast op from a more specific bounded type to an unbounded dynamic type.
@@ -275,7 +275,8 @@ Status GetOutputInfo(
     TF_RETURN_IF_ERROR(MaybeRewriteLayoutWithShardedShape(
         sharding, shape_determination_fns, &shape));
 
-    auto tensor_type = type_and_idx.value().dyn_cast<mlir::RankedTensorType>();
+    auto tensor_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(type_and_idx.value());
     shapes.push_back(shape);
 
     auto it = output_to_input_alias.find(type_and_idx.index());
@@ -872,7 +873,7 @@ static absl::StatusOr<std::vector<int>> RewriteWithArgs(
       auto resource_type =
           mlir::TF::ResourceType::get({resource_subtype}, builder.getContext());
 
-      auto tensor_type = mlir_arg.getType().cast<mlir::TensorType>();
+      auto tensor_type = mlir::cast<mlir::TensorType>(mlir_arg.getType());
       if (tensor_type.hasRank()) {
         mlir_arg.setType(
             GetTypeFromTFTensorShape(tensor_type.getShape(), resource_type));
@@ -1028,26 +1029,6 @@ Status BuildHloFromGraph(
                     flib_def, debug_info, &mlir_context));
   return BuildHloFromModule(module.get(), builder, xla_params, returns, args,
                             device_type, custom_legalization_passes);
-}
-
-Status CompileGraphToXlaHlo(
-    const Graph& graph, llvm::ArrayRef<XlaArgument> args,
-    llvm::ArrayRef<std::string> control_rets, llvm::StringRef device_type,
-    bool use_tuple_args, bool enable_op_fallback,
-    const FunctionLibraryDefinition& flib_def, const GraphDebugInfo& debug_info,
-    XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
-    XlaCompilationResult* compilation_result,
-    llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
-        custom_legalization_passes) {
-  mlir::MLIRContext context;
-  TF_ASSIGN_OR_RETURN(
-      mlir::OwningOpRef<mlir::ModuleOp> module,
-      GraphToModule(/*unconditionally_use_set_output_shapes=*/false, graph,
-                    control_rets, flib_def, debug_info, &context));
-  return CompileGraphToXlaHlo(
-      module.get(), args, device_type, use_tuple_args, enable_op_fallback,
-      /*use_return_tuple=*/true, shape_determination_fns, compilation_result,
-      custom_legalization_passes);
 }
 
 void RegisterConvertMlirToXlaHloPipelineWithDefaults() {

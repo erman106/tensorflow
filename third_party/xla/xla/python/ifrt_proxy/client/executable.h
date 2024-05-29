@@ -40,8 +40,8 @@
 #include "xla/python/ifrt/future.h"
 #include "xla/python/ifrt/host_callback.h"
 #include "xla/python/ifrt_proxy/client/rpc_helper.h"
+#include "xla/tsl/concurrency/ref_count.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/concurrency/ref_count.h"
 
 namespace xla {
 namespace ifrt {
@@ -137,7 +137,7 @@ class LoadedExecutable final
 
   // Metadata queried when the executable is created. Declared as `mutable`
   // since `Future::Await()` is not const.
-  mutable Future<absl::StatusOr<std::shared_ptr<Metadata>>> metadata_future_;
+  mutable Future<std::shared_ptr<Metadata>> metadata_future_;
 };
 
 }  // namespace proxy

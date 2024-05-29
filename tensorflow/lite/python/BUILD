@@ -20,7 +20,7 @@ exports_files(["tflite_convert.py"])
 
 flatbuffer_py_library(
     name = "schema_py",
-    srcs = ["//tensorflow/lite/schema:schema.fbs"],
+    srcs = ["//tensorflow/compiler/mlir/lite/schema:schema.fbs"],
 )
 
 flatbuffer_py_library(
@@ -180,6 +180,9 @@ py_strict_library(
     name = "lite",
     srcs = ["lite.py"],
     srcs_version = "PY3",
+    tags = [
+        "ignore_for_dep=third_party.py.keras",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":conversion_metadata_schema_py",
@@ -194,6 +197,7 @@ py_strict_library(
         "//tensorflow/compiler/mlir/quantization/tensorflow/python:representative_dataset",
         "//tensorflow/core:protos_all_py",
         "//tensorflow/lite/experimental/microfrontend:audio_microfrontend_py",
+        "//tensorflow/lite/profiling/proto:profiling_info_py",
         "//tensorflow/lite/python/metrics",
         "//tensorflow/lite/python/optimize:calibrator",
         "//tensorflow/lite/tools:flatbuffer_utils",
@@ -208,6 +212,7 @@ py_strict_library(
         "//tensorflow/python/framework:errors",
         "//tensorflow/python/framework:importer",
         "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:tensor_spec",
         "//tensorflow/python/framework:versions",
         "//tensorflow/python/platform:gfile",
         "//tensorflow/python/saved_model:load",
@@ -218,6 +223,7 @@ py_strict_library(
         "//tensorflow/python/saved_model:tag_constants",
         "//tensorflow/python/util:deprecation",
         "//tensorflow/python/util:keras_deps",
+        "//tensorflow/python/util:nest",
         "//tensorflow/python/util:tf_export",
         "@absl_py//absl/logging",
     ],
@@ -439,6 +445,7 @@ py_strict_library(
     srcs_version = "PY3",
     deps = [
         "//tensorflow/python/eager:def_function",
+        "//tensorflow/python/framework:tensor_spec",
         "//tensorflow/python/util:compat",
         "//tensorflow/python/util:keras_deps",
         "//tensorflow/python/util:nest",

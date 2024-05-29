@@ -238,14 +238,17 @@ absl::StatusOr<AotResult> AotCompileSavedModel(
                                     std::string(input_model_dir),
                                     resource_context.get());
 
-  {
-    model_context.set_meta_graph_def(&meta_graph_def);
-    TF_RETURN_IF_ERROR(
-        aot_options.graph_execution_options->runtime->CreateRuntimeResources(
-            model_context));
-
-    model_context.set_meta_graph_def(nullptr);
-  }
+  CallableOptions callable_options =
+      CombineSignatureDefs(meta_graph_def.signature_def());
+  model_context.set_graph_def(&meta_graph_def.graph_def());
+  model_context.set_callable_options(&callable_options);
+  TF_RETURN_IF_ERROR(
+      aot_options.graph_execution_options->runtime->CreateRuntimeResources(
+          model_context));
+  // These are only needed for `CreateRuntimeResources`, and also safer
+  // since meta_graph_def will be moved.
+  model_context.set_graph_def(nullptr);
+  model_context.set_callable_options(nullptr);
 
   tfrt::BefBuffer bef;
   std::vector<std::string> xla_function_names;
@@ -307,8 +310,8 @@ AotCompileToGpuPjRtExecutable(
   xla::Compiler::TargetConfig gpu_config(gpu_target_config);
   xla::StreamExecutorGpuCompiler pjrt_gpu_compiler;
   // Create a trivial topology, which won't be used.
-  xla::StreamExecutorGpuTopologyDescription topology(
-      xla::CudaId(), xla::CudaName(), "fake_device", {0});
+  xla::StreamExecutorGpuTopologyDescription topology(xla::CudaId(),
+                                                     xla::CudaName(), nullptr);
   xla::CompileOptions pjrt_options =
       GetPjRtCompileOptions(options, **compilation_result);
   pjrt_options.target_config = gpu_config;

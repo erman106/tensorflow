@@ -42,8 +42,8 @@ class TritonFusionAnalysis {
   static absl::StatusOr<TritonFusionAnalysis> Execute(
       const HloComputation& computation, int split_k = 1);
 
-  // Execute the analysis of a produce-consumer fusion. Returns OkStatus, if the
-  // analysis can find a valid tiling for the producer-consumer fusion.
+  // Execute the analysis of a produce-consumer fusion. Returns absl::OkStatus,
+  // if the analysis can find a valid tiling for the producer-consumer fusion.
   // `split_k` indicates whether this operation was converted to the split-K
   // form and tells the analysis how to interpret the batch dimensions.
   static absl::Status ExecuteForProducerConsumer(const HloInstruction& producer,
@@ -78,6 +78,10 @@ class TritonFusionAnalysis {
   const ConstHloInstructionSet& ScopeParameters(const Scope scope) const {
     return parameters_.at(scope);
   }
+
+  // Returns the given instruction's scope, if there is no scope, returns
+  // nullopt instead.
+  std::optional<Scope> QueryInstructionScope(const HloInstruction& hlo) const;
 
   std::string ToString() const;
 

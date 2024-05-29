@@ -56,9 +56,6 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-// Returns whether GpuExecutable runs with Xla Runtime.
-bool IsXlaRuntimeExecutableEnabled(const HloModuleConfig& config);
-
 // GPU-targeting implementation of the XLA Executable interface.
 //
 // Launches the given GPU kernel via the StreamExecutor.
@@ -162,7 +159,7 @@ class GpuExecutable : public Executable {
       const ServiceExecutableRunOptions* run_options,
       VariantArguments arguments);
 
-  absl::Span<const BufferAllocation> GetAllocations() const {
+  absl::Span<const BufferAllocation> GetAllocations() const override {
     // A GpuExecutable can get its allocations in three ways:
     // 1 - From a regular compilation that uses allocations from MLIR.
     // 2 - From a regular compilation that uses the original allocations from
@@ -293,6 +290,12 @@ class GpuExecutable : public Executable {
   absl::flat_hash_map<stream_executor::StreamExecutor*,
                       std::unique_ptr<BufferAllocToDeviceMemoryMap>>
       module_globals_ ABSL_GUARDED_BY(module_handle_mutex_);
+
+  // Cache previous memory allocations for current module, this is used to help
+  // identify if user's model have unstable pointers by turning on VLOG(5).
+  absl::flat_hash_map<stream_executor::StreamExecutor*,
+                      std::vector<se::DeviceMemoryBase>>
+      module_allocations_ ABSL_GUARDED_BY(module_handle_mutex_);
 
   std::vector<ConstantInfo> constants_;
   const absl::flat_hash_map<ShapeIndex, OutputInfo> output_info_;
